@@ -1,0 +1,207 @@
+import os
+from datetime import datetime
+import configargparse
+
+import scipy
+import numpy as np
+import torch.multiprocessing as mp
+import torch
+import torch.nn as nn
+import torch.distributed as dist
+from sklearn import metrics
+
+from models.convnet import ConvNet
+from models.vgg import VGG
+from dataloader import dataloader
+
+def train(rank, args):
+    # for now on gpu per process     
+    args.rank = rank
+    gpu = rank
+    checkpoint_path = args.checkpoint_path
+
+    print('rank: {}. gpu: {}. world_size: {}'.format(rank, gpu, args.world_size))    
+    dist.init_process_group(backend='nccl',
+                            rank=rank,
+                            world_size=args.world_size)
+
+    torch.manual_seed(args.seed)
+    model = VGG(n_channels=64)
+        
+    model_parameters = filter(lambda p: p.requires_grad, model.parameters())
+    params = sum([np.prod(p.size()) for p in model_parameters])
+    print('number of trainable params: {}'.format(params))
+    
+    torch.cuda.set_device(gpu)
+    model.cuda(gpu)
+    
+    for m in model.parameters():
+        if isinstance(m, nn.Conv2d):
+            torch.nn.init.xavier_uniform_(m.weight)
+            if m.bias:
+                torch.nn.init.xavier_uniform_(m.bias)
+
+    # define loss function (criterion) and optimizer
+    criterion = nn.MultiLabelSoftMarginLoss().cuda(gpu)
+    optimizer = torch.optim.Adam(model.parameters(), args.learning_rate)
+    
+    # Wrap the model
+    model = nn.parallel.DistributedDataParallel(model,
+        device_ids=[gpu])
+
+    # Data loading code
+    train_loader = dataloader(args.train_pickle, args, mode='train')
+    
+    print(gpu)
+    print(args.distributed_validation)
+    if gpu==0 or args.distributed_validation:
+        val_loader =  dataloader(args.val_pickle, args, mode='val')
+    
+    loss_stats = {'train': [], 'val': []}
+    metric_stats = {'train_roc': [], 'val_roc': [], 'train_ap': [], 'val_ap': []}
+    
+    start = datetime.now()
+    total_step = len(train_loader)
+    print('total step: {}'.format(total_step))
+    
+    if args.just_one_batch:
+        print('Warning: just-one-batch mode on. Intended for debug purposes')
+        train_iterator = [next(iter(train_loader))]
+    else:
+        train_iterator = train_loader
+
+    for epoch in range(args.epochs):
+        train_loss, loss_val = 0, 0
+        y_true_train, y_pred_train, y_true_val, y_pred_val = [], [], [], []
+        roc_auc_train, pr_auc_train, roc_auc_val, pr_auc_val = 0, 0, 0, 0
+
+        for i, sample in enumerate(train_iterator):
+            specs = sample['melspectrogram'].cuda(non_blocking=True)
+            tags = sample['tags'].cuda(non_blocking=True)
+
+            # Forward pass
+            logits, sigmoid = model(specs)
+            loss = criterion(logits, tags)
+
+            # Backward and optimize
+            optimizer.zero_grad()
+            loss.backward()
+            optimizer.step()
+            
+            train_loss += loss.item()
+
+            y_true_train.append(tags.cpu().detach().numpy())
+            y_pred_train.append(sigmoid.cpu().detach().numpy())
+
+        y_true_train = np.vstack(y_true_train)
+        y_pred_train = np.vstack(y_pred_train)
+
+        roc_auc_train  = metrics.roc_auc_score(y_true_train, y_pred_train, average='macro')
+        pr_auc_train = metrics.average_precision_score(y_true_train, y_pred_train, average='macro')
+        loss_train = train_loss / len(train_loader)
+
+        if gpu == 0:
+            print('Rank {}, epoch [{}/{}], Step [{}/{}], Loss: {:.4f}'.format(
+                rank, epoch + 1, args.epochs, i + 1, total_step, loss.item()))
+
+        # save model
+        if rank == 0:
+            torch.save(model.state_dict(), checkpoint_path)
+        dist.barrier()
+        map_location = {'cuda:%d' % 0: 'cuda:%d' % rank}
+        model.load_state_dict(
+            torch.load(checkpoint_path, map_location=map_location))
+        
+        # validation
+        if not args.just_one_batch:
+            if gpu==0 or args.distributed_validation:
+                with torch.no_grad():
+                    for i, sample in enumerate(val_loader):
+                        specs = sample['melspectrogram'].cuda(non_blocking=True)
+                        tags = sample['tags'].cuda(non_blocking=True)
+                        # Forward pass
+                        logits, sigmoid = model(specs)
+                        loss = criterion(logits, tags)
+
+                        loss_val += loss.item()
+                        y_true_val.append(tags.cpu().detach().numpy())
+                        y_pred_val.append(sigmoid.cpu().detach().numpy())
+
+                y_true_val = np.vstack(y_true_val)
+                y_pred_val = np.vstack(y_pred_val)
+
+                roc_auc_val = metrics.roc_auc_score(y_true_val, y_pred_val, average='macro')
+                pr_auc_val = metrics.average_precision_score(y_true_val, y_pred_val, average='macro')
+                loss_val = loss_val / len(val_loader)
+
+        loss_stats['train'].append(loss_train)
+        loss_stats['val'].append(loss_val)
+        metric_stats['train_roc'].append(roc_auc_train)
+        metric_stats['val_roc'].append(roc_auc_val)
+        metric_stats['train_ap'].append(pr_auc_train)
+        metric_stats['val_ap'].append(pr_auc_val)
+
+        elapsed = str(datetime.now() - start)
+
+        print(f'Epoch {epoch+0:03}: | '
+              f'Train Loss: {loss_train:.3f} | '
+              f'Val Loss: {loss_val:.3f} | '
+              f'Train ROC AUC: {roc_auc_train:.3f} | '
+              f'Val ROC AUC: {roc_auc_val:.3f} | '
+              f'Train AP: {pr_auc_train:.3f} | '
+              f'Val AP: {pr_auc_val:.3f} | '
+              f'Time : {elapsed}')
+
+
+
+if __name__ == '__main__':
+    parser = configargparse.ArgumentParser(default_config_files=['config.ini'])
+    parser.add('-c', '---config-file', is_config_file=True,
+               help='config file path')
+    parser.add('--master-addr',
+               help='address of the master node') 
+    parser.add('--master-port',
+               help='port of the master node')
+    parser.add('--nccl-socket-iframe', help='NCCL socket iframe')
+    parser.add('--nccl-ib-disable', 
+               help='Whether to use Infiniband')
+    parser.add('-n', '--nodes', default=1, type=int, metavar='N')
+    parser.add('-np', '--nproc-per-node', default=1, type=int,
+               help='ranking within the nodes')
+    parser.add('-g', '--gpus-per-proc', default=1, type=int,
+               help='number of gpus per process')
+    parser.add('--epochs', type=int, metavar='N',
+               help='number of total epochs to run')
+    parser.add('--train-batch-size', type=int, metavar='N',
+               help='train batch size')
+    parser.add('--val-batch-size', type=int, metavar='N',
+               help='val batch size')
+    parser.add('--train-sampling-strategy',
+               help='train sampling strategy')
+    parser.add('--val-sampling-strategy',
+               help='val sampling strategy')
+    parser.add('--learning-rate', type=float, metavar='N',
+               help='initial learning rate')
+    parser.add('--seed')
+    parser.add('--root', help='root data directory')
+    parser.add('--train-pickle', help='pickle file with the training indices')
+    parser.add('--val-pickle', help='pickle file with the validation indices')
+    parser.add('--checkpoint-path')
+    parser.add('--train', action='store_true')
+    parser.add('--just-one-batch', action='store_true')
+    parser.add('--distributed-validation', action='store_true')
+    
+    
+    args = parser.parse_args()
+    
+    args.world_size = args.nproc_per_node * args.nodes
+    
+    
+    print('args:\n{}'.format(args))
+
+    os.environ['MASTER_ADDR'] = args.master_addr
+    os.environ['MASTER_PORT'] = args.master_port
+    os.environ['NCCL_SOCKET_IFRAME'] = args.nccl_socket_iframe
+    os.environ['NCCL_IB_DISABLE'] = args.nccl_ib_disable
+    
+    mp.spawn(train, nprocs=args.nproc_per_node, args=(args,))
