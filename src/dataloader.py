@@ -3,6 +3,7 @@ import numpy as np
 from discotubedataset import DiscotubeDataset
 from multilabel_balanced_sampler import MultilabelBalancedRandomSampler
 from torch.utils.data.sampler import RandomSampler
+import logging
 
 def dataloader(pickle_file, args, mode='train'):
     num_replicas = args.world_size
@@ -29,9 +30,9 @@ def dataloader(pickle_file, args, mode='train'):
         num_replicas=num_replicas,
         rank=args.rank)
 
-    # get the indices for this rank.    
+    # get the indices for this rank.
     indices = [i for i in iter(rank_sampler)]
-    print('n samples per process: ', len(indices))
+    logging.info(f'number of samples per process: {len(indices)}')
 
     rank_subset = torch.utils.data.Subset(dataset, indices)
     labels = np.array([i['tags'] for i in iter(rank_subset)])
@@ -40,7 +41,7 @@ def dataloader(pickle_file, args, mode='train'):
         sampler = MultilabelBalancedRandomSampler(
             labels, 
             class_choice="least_sampled")
-    
+
     elif  sampler == 'random':
         sampler = RandomSampler(rank_subset)
 

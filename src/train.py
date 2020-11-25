@@ -3,6 +3,8 @@ from datetime import datetime
 import configargparse
 from pathlib import Path
 import json
+import logging
+import sys
 
 import scipy
 import numpy as np
@@ -30,6 +32,20 @@ def train(rank, args):
     exp_dir = Path(args.exp_dir, args.exp_id)
     exp_dir.mkdir(parents=True)
 
+    logging.basicConfig(filename=str(exp_dir / "exp.log"),
+                        level=logging.DEBUG)
+    root_logger = logging.getLogger()
+    handler = logging.StreamHandler(sys.stdout)
+    handler.setLevel(args.logging_level)
+    root_logger.addHandler(handler)
+
+    logging_name = logging.getLevelName(logging.getLogger().getEffectiveLevel())
+    logging.info(f'starting experiment "{args.exp_id}"')
+    logging.debug(f'logging level: {logging_name}')
+
+    logging.debug('experiment configuration:')
+    logging.debug(vars(args))
+
     with open(str(exp_dir / "config.json"), "w" ) as f:
         json.dump(vars(args), f, indent=4)
 
@@ -37,10 +53,13 @@ def train(rank, args):
 
     tb_logger = TBLogger(log_dir=str(exp_dir / "tensorboard"))
 
-    print('rank: {}. gpu: {}. world_size: {}'.format(rank, gpu, args.world_size))
+    logging.info(f'rank: {rank}. gpu: {gpu}. world_size: {args.world_size}')
+
+    logging.debug('Initiating process group...')
     dist.init_process_group(backend='nccl',
                             rank=rank,
                             world_size=args.world_size)
+    logging.debug('ok!')
 
     torch.manual_seed(args.seed)
     model_factory = ModelFactory()
@@ -48,7 +67,7 @@ def train(rank, args):
 
     model_parameters = filter(lambda p: p.requires_grad, model.parameters())
     params = sum([np.prod(p.size()) for p in model_parameters])
-    print('number of trainable params: {}'.format(params))
+    logging.info(f'number of trainable params: {params}')
     
     torch.cuda.set_device(gpu)
     model.cuda(gpu)
@@ -70,8 +89,9 @@ def train(rank, args):
     # Data loading code
     train_loader = dataloader(args.train_pickle, args, mode='train')
 
-    print(gpu)
-    print(args.distributed_validation)
+    if args.distributed_validation:
+        logging.debug('using distributed validation')
+
     if gpu==0 or args.distributed_validation:
         val_loader = dataloader(args.val_pickle, args, mode='val')
 
@@ -80,14 +100,15 @@ def train(rank, args):
 
     start = datetime.now()
     total_step = len(train_loader)
-    print('total step: {}'.format(total_step))
-    
+    logging.info(f'number of steps per epoch: {total_step}')
+
     if args.just_one_batch:
-        print('Warning: just-one-batch mode on. Intended for debug purposes')
+        logging.warning('`just-one-batch` mode on. Intended for development purposes')
         train_iterator = [next(iter(train_loader))]
     else:
         train_iterator = train_loader
 
+    logging.debug('entering the training loop')
     for epoch in range(args.epochs):
         train_loss, loss_val = 0, 0
         y_true_train, y_pred_train, y_true_val, y_pred_val = [], [], [], []
@@ -98,7 +119,7 @@ def train(rank, args):
             tags = sample['tags'].cuda(non_blocking=True)
 
             # Forward pass
-            logits, sigmoid = model(specs)
+            logits = model(specs)
             loss = criterion(logits, tags)
 
             # Backward and optimize
@@ -109,7 +130,7 @@ def train(rank, args):
             train_loss += loss.item()
 
             y_true_train.append(tags.cpu().detach().numpy())
-            y_pred_train.append(sigmoid.cpu().detach().numpy())
+            y_pred_train.append(logits.cpu().detach().numpy())
 
         y_true_train = np.vstack(y_true_train)
         y_pred_train = np.vstack(y_pred_train)
@@ -119,8 +140,7 @@ def train(rank, args):
         loss_train = train_loss / len(train_loader)
 
         if gpu == 0:
-            print('Rank {}, epoch [{}/{}], Step [{}/{}], Loss: {:.4f}'.format(
-                rank, epoch + 1, args.epochs, i + 1, total_step, loss.item()))
+            logging.info(f'Step [{i + 1}/{total_step}]')
 
         # validation
         if not args.just_one_batch:
@@ -150,14 +170,15 @@ def train(rank, args):
 
         elapsed = str(datetime.now() - start)
 
-        print(f'Epoch {epoch+0:03}: | '
-              f'Train Loss: {loss_train:.3f} | '
-              f'Val Loss: {loss_val:.3f} | '
-              f'Train ROC AUC: {roc_auc_train:.3f} | '
-              f'Val ROC AUC: {roc_auc_val:.3f} | '
-              f'Train AP: {pr_auc_train:.3f} | '
-              f'Val AP: {pr_auc_val:.3f} | '
-              f'Time : {elapsed}')
+        if gpu == 0:
+            logging.info(f'Epoch [{epoch + 1:03}/{args.epochs}]: | '
+                         f'Train Loss: {loss_train:.3f} | '
+                         f'Val Loss: {loss_val:.3f} | '
+                         f'Train ROC AUC: {roc_auc_train:.3f} | '
+                         f'Val ROC AUC: {roc_auc_val:.3f} | '
+                         f'Train AP: {pr_auc_train:.3f} | '
+                         f'Val AP: {pr_auc_val:.3f} | '
+                         f'Time : {elapsed}')
 
         tb_logger.write_epoch_stats(epoch, stats)
 
@@ -166,7 +187,7 @@ def train(rank, args):
             if loss_val <= best_loss_vas:
                 best_loss_vas = loss_val
                 torch.save(model.state_dict(), str(checkpoint_path))
-                print('Lowest valiation loss achieved. Updating the model!')
+                logging.debug('lowest valiation loss achieved. Updating the model!')
 
         dist.barrier()
         map_location = {'cuda:%d' % 0: 'cuda:%d' % rank}
@@ -216,12 +237,11 @@ if __name__ == '__main__':
     parser.add('--x-size', type=int)
     parser.add('--y-size', type=int)
     parser.add('--model-name')
+    parser.add('--logging-level')
 
     args = parser.parse_args()
 
     args.world_size = args.nproc_per_node * args.nodes
-
-    print('args:\n{}'.format(args))
 
     os.environ['MASTER_ADDR'] = args.master_addr
     os.environ['MASTER_PORT'] = args.master_port
