@@ -1,4 +1,7 @@
+# default directory to store generated files
 out/*
+# default directory to store for the experiments
+exp/*
 */.ipynb_checkpoints/*
 */__pycache__/*
 *.pyc
