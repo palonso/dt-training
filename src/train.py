@@ -1,6 +1,8 @@
 import os
 from datetime import datetime
 import configargparse
+from pathlib import Path
+import json
 
 import scipy
 import numpy as np
@@ -15,26 +17,36 @@ from models.vgg import VGG
 from dataloader import dataloader
 
 def train(rank, args):
-    # for now on gpu per process     
+    # for now one gpu per process
     args.rank = rank
     gpu = rank
-    checkpoint_path = args.checkpoint_path
+    # checkpoint_path = args.checkpoint_path
 
-    print('rank: {}. gpu: {}. world_size: {}'.format(rank, gpu, args.world_size))    
+    args.timestamp = datetime.now().strftime("%y%m%d-%H%M%S")
+
+    exp_dir = Path(args.exp_dir, f"{args.timestamp}-{args.exp_name}")
+    exp_dir.mkdir(parents=True)
+
+    with open(str(exp_dir / "config.json"), "w" ) as f:
+        json.dump(vars(args), f, indent=4)
+
+    checkpoint_path = exp_dir / "model.checkpoint"
+
+    print('rank: {}. gpu: {}. world_size: {}'.format(rank, gpu, args.world_size))
     dist.init_process_group(backend='nccl',
                             rank=rank,
                             world_size=args.world_size)
 
     torch.manual_seed(args.seed)
-    model = VGG(n_channels=64)
-        
+    model = Model("VGG")
+
     model_parameters = filter(lambda p: p.requires_grad, model.parameters())
     params = sum([np.prod(p.size()) for p in model_parameters])
     print('number of trainable params: {}'.format(params))
     
     torch.cuda.set_device(gpu)
     model.cuda(gpu)
-    
+
     for m in model.parameters():
         if isinstance(m, nn.Conv2d):
             torch.nn.init.xavier_uniform_(m.weight)
@@ -44,22 +56,23 @@ def train(rank, args):
     # define loss function (criterion) and optimizer
     criterion = nn.MultiLabelSoftMarginLoss().cuda(gpu)
     optimizer = torch.optim.Adam(model.parameters(), args.learning_rate)
-    
+
     # Wrap the model
     model = nn.parallel.DistributedDataParallel(model,
         device_ids=[gpu])
 
     # Data loading code
     train_loader = dataloader(args.train_pickle, args, mode='train')
-    
+
     print(gpu)
     print(args.distributed_validation)
     if gpu==0 or args.distributed_validation:
-        val_loader =  dataloader(args.val_pickle, args, mode='val')
-    
+        val_loader = dataloader(args.val_pickle, args, mode='val')
+
     loss_stats = {'train': [], 'val': []}
     metric_stats = {'train_roc': [], 'val_roc': [], 'train_ap': [], 'val_ap': []}
-    
+    best_loss_vas = np.Inf
+
     start = datetime.now()
     total_step = len(train_loader)
     print('total step: {}'.format(total_step))
@@ -96,7 +109,7 @@ def train(rank, args):
         y_true_train = np.vstack(y_true_train)
         y_pred_train = np.vstack(y_pred_train)
 
-        roc_auc_train  = metrics.roc_auc_score(y_true_train, y_pred_train, average='macro')
+        roc_auc_train = metrics.roc_auc_score(y_true_train, y_pred_train, average='macro')
         pr_auc_train = metrics.average_precision_score(y_true_train, y_pred_train, average='macro')
         loss_train = train_loss / len(train_loader)
 
@@ -104,14 +117,6 @@ def train(rank, args):
             print('Rank {}, epoch [{}/{}], Step [{}/{}], Loss: {:.4f}'.format(
                 rank, epoch + 1, args.epochs, i + 1, total_step, loss.item()))
 
-        # save model
-        if rank == 0:
-            torch.save(model.state_dict(), checkpoint_path)
-        dist.barrier()
-        map_location = {'cuda:%d' % 0: 'cuda:%d' % rank}
-        model.load_state_dict(
-            torch.load(checkpoint_path, map_location=map_location))
-        
         # validation
         if not args.just_one_batch:
             if gpu==0 or args.distributed_validation:
@@ -152,11 +157,22 @@ def train(rank, args):
               f'Val AP: {pr_auc_val:.3f} | '
               f'Time : {elapsed}')
 
+        # save model
+        if rank == 0:
+            if loss_val <= best_loss_vas:
+                best_loss_vas = loss_val
+                torch.save(model.state_dict(), str(checkpoint_path))
+                print('Lowest valiation loss achieved. Updating the model!')
+
+        dist.barrier()
+        map_location = {'cuda:%d' % 0: 'cuda:%d' % rank}
+        model.load_state_dict(
+            torch.load(str(checkpoint_path), map_location=map_location))
 
 
 if __name__ == '__main__':
     parser = configargparse.ArgumentParser(default_config_files=['config.ini'])
-    parser.add('-c', '---config-file', is_config_file=True,
+    parser.add('-c', '--config-file', is_config_file=True,
                help='config file path')
     parser.add('--master-addr',
                help='address of the master node') 
@@ -186,17 +202,16 @@ if __name__ == '__main__':
     parser.add('--root', help='root data directory')
     parser.add('--train-pickle', help='pickle file with the training indices')
     parser.add('--val-pickle', help='pickle file with the validation indices')
-    parser.add('--checkpoint-path')
     parser.add('--train', action='store_true')
     parser.add('--just-one-batch', action='store_true')
     parser.add('--distributed-validation', action='store_true')
-    
-    
+    parser.add('--exp-name', help='the experiment name')
+    parser.add('--exp-dir', help='the experiment directory')
+
     args = parser.parse_args()
-    
+
     args.world_size = args.nproc_per_node * args.nodes
-    
-    
+
     print('args:\n{}'.format(args))
 
     os.environ['MASTER_ADDR'] = args.master_addr
