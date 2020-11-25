@@ -15,6 +15,8 @@ from sklearn import metrics
 from models.convnet import ConvNet
 from modelfactory import ModelFactory
 from dataloader import dataloader
+from tblogger import TBLogger
+
 
 def train(rank, args):
     # for now one gpu per process
@@ -23,14 +25,17 @@ def train(rank, args):
     # checkpoint_path = args.checkpoint_path
 
     args.timestamp = datetime.now().strftime("%y%m%d-%H%M%S")
+    args.exp_id = f"{args.timestamp}-{args.exp_name}"
 
-    exp_dir = Path(args.exp_dir, f"{args.timestamp}-{args.exp_name}")
+    exp_dir = Path(args.exp_dir, args.exp_id)
     exp_dir.mkdir(parents=True)
 
     with open(str(exp_dir / "config.json"), "w" ) as f:
         json.dump(vars(args), f, indent=4)
 
     checkpoint_path = exp_dir / "model.checkpoint"
+
+    tb_logger = TBLogger(log_dir=str(exp_dir / "tensorboard"))
 
     print('rank: {}. gpu: {}. world_size: {}'.format(rank, gpu, args.world_size))
     dist.init_process_group(backend='nccl',
@@ -70,8 +75,7 @@ def train(rank, args):
     if gpu==0 or args.distributed_validation:
         val_loader = dataloader(args.val_pickle, args, mode='val')
 
-    loss_stats = {'train': [], 'val': []}
-    metric_stats = {'train_roc': [], 'val_roc': [], 'train_ap': [], 'val_ap': []}
+    stats = {'Loss': [], 'AUC/ROC': [], 'AUC/PR': []}
     best_loss_vas = np.Inf
 
     start = datetime.now()
@@ -140,12 +144,9 @@ def train(rank, args):
                 pr_auc_val = metrics.average_precision_score(y_true_val, y_pred_val, average='macro')
                 loss_val = loss_val / len(val_loader)
 
-        loss_stats['train'].append(loss_train)
-        loss_stats['val'].append(loss_val)
-        metric_stats['train_roc'].append(roc_auc_train)
-        metric_stats['val_roc'].append(roc_auc_val)
-        metric_stats['train_ap'].append(pr_auc_train)
-        metric_stats['val_ap'].append(pr_auc_val)
+        stats['Loss'].append({'train': loss_train, 'val': loss_val})
+        stats['AUC/ROC'].append({'train': roc_auc_train, 'val': roc_auc_val})
+        stats['AUC/PR'].append({'train': pr_auc_train, 'val': pr_auc_val})
 
         elapsed = str(datetime.now() - start)
 
@@ -158,6 +159,8 @@ def train(rank, args):
               f'Val AP: {pr_auc_val:.3f} | '
               f'Time : {elapsed}')
 
+        tb_logger.write_epoch_stats(epoch, stats)
+
         # save model
         if rank == 0:
             if loss_val <= best_loss_vas:
@@ -169,6 +172,8 @@ def train(rank, args):
         map_location = {'cuda:%d' % 0: 'cuda:%d' % rank}
         model.load_state_dict(
             torch.load(str(checkpoint_path), map_location=map_location))
+
+    tb_logger.close()
 
 
 if __name__ == '__main__':
