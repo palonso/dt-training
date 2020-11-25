@@ -13,7 +13,7 @@ import torch.distributed as dist
 from sklearn import metrics
 
 from models.convnet import ConvNet
-from models.vgg import VGG
+from modelfactory import ModelFactory
 from dataloader import dataloader
 
 def train(rank, args):
@@ -38,7 +38,8 @@ def train(rank, args):
                             world_size=args.world_size)
 
     torch.manual_seed(args.seed)
-    model = Model("VGG")
+    model_factory = ModelFactory()
+    model = model_factory.create("VGG")
 
     model_parameters = filter(lambda p: p.requires_grad, model.parameters())
     params = sum([np.prod(p.size()) for p in model_parameters])
@@ -207,6 +208,9 @@ if __name__ == '__main__':
     parser.add('--distributed-validation', action='store_true')
     parser.add('--exp-name', help='the experiment name')
     parser.add('--exp-dir', help='the experiment directory')
+    parser.add('--x-size', type=int)
+    parser.add('--y-size', type=int)
+    parser.add('--model-name')
 
     args = parser.parse_args()
 
