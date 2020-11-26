@@ -20,11 +20,11 @@ from dataloader import dataloader
 from tblogger import TBLogger
 
 
-def train(rank, args):
-    # for now one gpu per process
-    args.rank = rank
+def train(args):
+    args.local_world_size = args.nproc_per_node
+    rank = args.local_rank
+
     args.exp_id = f"{args.timestamp}_{args.exp_name}"
-    gpu = rank
     exp_dir = Path(args.exp_base_dir, args.exp_id)
     args.exp_dir = str(exp_dir)
 
@@ -38,7 +38,9 @@ def train(rank, args):
         logger.debug(f'console logging level: {args.logging_level}')
 
     logger.info(f'starting experiment "{args.exp_id}"')
+    logger.debug(f'experiment folder: "{args.exp_dir}"')
     logger.debug(f'experiment configuration: {vars(args)}')
+    logger.debug(f'pid: {os.getpid()}')
 
     with open(str(exp_dir / f"config_{rank}.json"), "w" ) as f:
         json.dump(vars(args), f, indent=4)
@@ -47,24 +49,33 @@ def train(rank, args):
 
     tb_logger = TBLogger(log_dir=str(exp_dir / "tb_logs" / f"rank_{rank}"))
 
-    logger.info(f'rank: {rank}. gpu: {gpu}. world_size: {args.world_size}')
+    env_dict = {
+        key: os.environ[key]
+        for key in ("MASTER_ADDR", "MASTER_PORT", "RANK", "WORLD_SIZE", "LOCAL_RANK")
+    }
+    logger.debug(f"initializing process group with: {env_dict}")
+
 
     logger.debug('initiating process group...')
-    logger.debug('ok!')
     dist.init_process_group(backend='nccl',
-                            rank=rank,
-                            world_size=args.world_size)
+                            init_method='env://')
+    logger.debug('ok!')
 
     torch.manual_seed(args.seed)
+    
+    # assign gpus
+    # gpus_per_process = min(torch.cuda.device_count() // args.local_world_size, args.gpus_per_proc)
+    # device_ids = list(range(rank * gpus_per_process, (rank + 1) * gpus_per_process))
+    # logger.debug(f"using ({gpus_per_process}) GPUs. device_ids: {device_ids}")
+
     model_factory = ModelFactory()
     model = model_factory.create("VGG")
+    torch.cuda.set_device(rank)
+    model.cuda(rank)
 
     model_parameters = filter(lambda p: p.requires_grad, model.parameters())
     params = sum([np.prod(p.size()) for p in model_parameters])
     logger.info(f'number of trainable params: {params}')
-
-    torch.cuda.set_device(gpu)
-    model.cuda(gpu)
 
     for m in model.parameters():
         if isinstance(m, nn.Conv2d):
@@ -73,12 +84,13 @@ def train(rank, args):
                 torch.nn.init.xavier_uniform_(m.bias)
 
     # define loss function (criterion) and optimizer
-    criterion = nn.MultiLabelSoftMarginLoss().cuda(gpu)
+    criterion = nn.MultiLabelSoftMarginLoss().cuda(rank)
     optimizer = torch.optim.Adam(model.parameters(), args.learning_rate)
 
     # Wrap the model
     model = nn.parallel.DistributedDataParallel(model,
-        device_ids=[gpu])
+        device_ids=[rank],
+        output_device=rank)
 
     # Data loading code
     train_loader = dataloader(args.train_pickle, args, mode='train')
@@ -86,8 +98,8 @@ def train(rank, args):
     if args.distributed_validation:
         logger.debug('using distributed validation')
 
-    if gpu==0 or args.distributed_validation:
-        val_loader = dataloader(args.val_pickle, args, mode='val')
+    # if rank == 0 or args.distributed_validation:
+    val_loader = dataloader(args.val_pickle, args, mode='val')
 
     stats = {'Loss': [], 'AUC/ROC': [], 'AUC/PR': []}
     best_loss_vas = np.Inf
@@ -104,7 +116,7 @@ def train(rank, args):
         logger.debug('entering the training loop')
 
     for epoch in range(args.epochs):
-        logger.debug(f'starting epoch {epoch}')
+        logger.debug(f'starting epoch {epoch + 1}')
 
         train_loss, loss_val = 0, np.NaN
         y_true_train, y_pred_train, y_true_val, y_pred_val = [], [], [], []
@@ -127,6 +139,7 @@ def train(rank, args):
 
             y_true_train.append(tags.cpu().detach().numpy())
             y_pred_train.append(sigmoid.cpu().detach().numpy())
+            logger.info(f'Step [{i + 1}/{total_step}]')
 
         y_true_train = np.vstack(y_true_train)
         y_pred_train = np.vstack(y_pred_train)
@@ -135,11 +148,12 @@ def train(rank, args):
         pr_auc_train = metrics.average_precision_score(y_true_train, y_pred_train, average='macro')
         loss_train = train_loss / len(train_loader)
 
-        logger.info(f'Step [{i + 1}/{total_step}]')
 
+        if args.just_one_batch:
+            validate = False
         # validation
         if not args.just_one_batch:
-            if gpu==0 or args.distributed_validation:
+            # if rank == 0 or args.distributed_validation:
                 loss_val = 0
                 with torch.no_grad():
                     for i, sample in enumerate(val_loader):
@@ -150,15 +164,35 @@ def train(rank, args):
                         loss = criterion(logits, tags)
 
                         loss_val += loss.item()
-                        y_true_val.append(tags.cpu().detach().numpy())
-                        y_pred_val.append(sigmoid.cpu().detach().numpy())
 
-                y_true_val = np.vstack(y_true_val)
-                y_pred_val = np.vstack(y_pred_val)
+                        # gather the predictions in rank 0
+                        if not args.distributed_validation:
+                            tags_list = [torch.zeros_like(tags) for _ in range(args.local_world_size)]
+                            sigmoid_list = [torch.zeros_like(sigmoid) for _ in range(args.local_world_size)]
 
-                roc_auc_val = metrics.roc_auc_score(y_true_val, y_pred_val, average='macro')
-                pr_auc_val = metrics.average_precision_score(y_true_val, y_pred_val, average='macro')
-                loss_val = loss_val / len(val_loader)
+                            # ideally we could use `gather` as we just need
+                            # the data in the rank 0 but it's not implemented
+                            # in our backend (NCCL) yet.
+                            dist.all_gather(tags_list, tags)
+                            dist.all_gather(sigmoid_list, sigmoid)
+
+                            if rank == 0:
+                                for t, s in zip(tags_list, sigmoid_list):
+                                    y_true_val.append(t.cpu().detach().numpy())
+                                    y_pred_val.append(s.cpu().detach().numpy())
+                        else:
+                            y_true_val.append(tags.cpu().detach().numpy())
+                            y_pred_val.append(sigmoid.cpu().detach().numpy())
+
+                if args.distributed_validation or rank == 0:
+                    y_true_val = np.vstack(y_true_val)
+                    y_pred_val = np.vstack(y_pred_val)
+                    logger.debug(f"val tags shape {y_true_val.shape}")
+                    logger.debug(f"val preds shape {y_pred_val.shape}")
+
+                    roc_auc_val = metrics.roc_auc_score(y_true_val, y_pred_val, average='macro')
+                    pr_auc_val = metrics.average_precision_score(y_true_val, y_pred_val, average='macro')
+                    loss_val = loss_val / len(val_loader)
 
         stats['Loss'].append({'train': loss_train, 'val': loss_val})
         stats['AUC/ROC'].append({'train': roc_auc_train, 'val': roc_auc_val})
@@ -166,7 +200,6 @@ def train(rank, args):
 
         elapsed = str(datetime.now() - start)
 
-        
         logger.info(f'Epoch [{epoch + 1:03}/{args.epochs}]: | '
                     f'Train Loss: {loss_train:.3f} | '
                     f'Val Loss: {loss_val:.3f} | '
@@ -180,70 +213,66 @@ def train(rank, args):
 
         # save model
         if rank == 0:
-            if loss_val <= best_loss_vas:
+            if loss_val <= best_loss_vas or epoch == 0:
                 best_loss_vas = loss_val
                 torch.save(model.state_dict(), str(checkpoint_path))
                 logger.debug('lowest valiation loss achieved. Updating the model!')
 
+        logger.debug('waiting on barrier to reload the model')
         dist.barrier()
         map_location = {'cuda:%d' % 0: 'cuda:%d' % rank}
         model.load_state_dict(
             torch.load(str(checkpoint_path), map_location=map_location))
+        logger.debug('reloaded best model')
+        logger.debug('epoch finished')
 
+    logger.debug('cleaning up process group')
+    dist.destroy_process_group()
+    logger.debug('done!')
     tb_logger.close()
 
 
 if __name__ == '__main__':
     parser = configargparse.ArgumentParser(default_config_files=['config.ini'])
-    parser.add('-c', '--config-file', is_config_file=True,
-               help='config file path')
-    parser.add('--master-addr',
-               help='address of the master node') 
-    parser.add('--master-port',
-               help='port of the master node')
-    parser.add('--nccl-socket-iframe', help='NCCL socket iframe')
-    parser.add('--nccl-ib-disable', 
-               help='Whether to use Infiniband')
-    parser.add('-n', '--nodes', default=1, type=int, metavar='N')
-    parser.add('-np', '--nproc-per-node', default=1, type=int,
-               help='ranking within the nodes')
-    parser.add('-g', '--gpus-per-proc', default=1, type=int,
-               help='number of gpus per process')
-    parser.add('--epochs', type=int, metavar='N',
-               help='number of total epochs to run')
-    parser.add('--train-batch-size', type=int, metavar='N',
-               help='train batch size')
-    parser.add('--val-batch-size', type=int, metavar='N',
-               help='val batch size')
-    parser.add('--train-sampling-strategy',
-               help='train sampling strategy')
-    parser.add('--val-sampling-strategy',
-               help='val sampling strategy')
-    parser.add('--learning-rate', type=float, metavar='N',
-               help='initial learning rate')
-    parser.add('--seed')
+
+    parser.add('-c', '--config-file', is_config_file=True, help='config file path')
+
+    # exp config
+    parser.add('--exp-name', help='the experiment name')
+    parser.add('--exp-base-dir', help='the experiment directory')
+    parser.add('--timestamp', help='experiment timestamp',
+               default=datetime.now().strftime("%y%m%d-%H%M%S"))
+    parser.add('--logging-level', default='INFO', help='console logging level')
+    # parser.add('--train', action='store_true')
+
+    # distributed config
+    parser.add('--distributed-validation', action='store_true')
+    parser.add('--n-nodes', default=1, type=int)
+    parser.add('--node-rank', default=0, type=int)
+    parser.add('--local_rank', default=0, type=int)
+    parser.add('--nproc-per-node', default=1, type=int,
+               help='number of processes per node')
+
+    # data config
     parser.add('--root', help='root data directory')
     parser.add('--train-pickle', help='pickle file with the training indices')
     parser.add('--val-pickle', help='pickle file with the validation indices')
-    parser.add('--train', action='store_true')
     parser.add('--just-one-batch', action='store_true')
-    parser.add('--distributed-validation', action='store_true')
-    parser.add('--exp-name', help='the experiment name')
-    parser.add('--exp-base-dir', help='the experiment directory')
+    parser.add('--train-sampling-strategy', help='train sampling strategy')
+    parser.add('--val-sampling-strategy', help='val sampling strategy')
+
+    # model config
+    parser.add('--model-name')
     parser.add('--x-size', type=int)
     parser.add('--y-size', type=int)
-    parser.add('--model-name')
-    parser.add('--logging-level')
 
-    args = parser.parse_args()
+    # train config
+    parser.add('--seed', help='seed number')
+    parser.add('--epochs', type=int, help='number of total epochs to run')
+    parser.add('--learning-rate', type=float, help='initial learning rate')
+    parser.add('--train-batch-size', type=int, help='train batch size')
+    parser.add('--val-batch-size', type=int, help='val batch size')
 
-    args.world_size = args.nproc_per_node * args.nodes
+    args, _ = parser.parse_known_args()
 
-    os.environ['MASTER_ADDR'] = args.master_addr
-    os.environ['MASTER_PORT'] = args.master_port
-    os.environ['NCCL_SOCKET_IFRAME'] = args.nccl_socket_iframe
-    os.environ['NCCL_IB_DISABLE'] = args.nccl_ib_disable
-
-    args.timestamp = datetime.now().strftime("%y%m%d-%H%M%S")
-
-    mp.spawn(train, nprocs=args.nproc_per_node, args=(args,))
+    train(args)

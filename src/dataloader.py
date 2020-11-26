@@ -6,7 +6,7 @@ from torch.utils.data.sampler import RandomSampler
 import logging
 
 def dataloader(pickle_file, args, mode='train'):
-    num_replicas = args.world_size
+    num_replicas = args.local_world_size
 
     if mode == 'train':
         sampling_strategy = args.train_sampling_strategy
@@ -17,8 +17,8 @@ def dataloader(pickle_file, args, mode='train'):
         sampling_strategy = args.val_sampling_strategy
         batch_size = args.val_batch_size
         sampler = 'random'
-        if not args.distributed_validation:
-            num_replicas = 1
+        # if not args.distributed_validation:
+        #     num_replicas = 1
 
     # Data loading code
     dataset = DiscotubeDataset(pickle_file=pickle_file,
@@ -28,7 +28,7 @@ def dataloader(pickle_file, args, mode='train'):
     rank_sampler = torch.utils.data.distributed.DistributedSampler(
         dataset,
         num_replicas=num_replicas,
-        rank=args.rank)
+        rank=args.local_rank)
 
     # get the indices for this rank.
     indices = [i for i in iter(rank_sampler)]
