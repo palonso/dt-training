@@ -45,7 +45,7 @@ def train(rank, args):
 
     checkpoint_path = exp_dir / "model.checkpoint"
 
-    tb_logger = TBLogger(log_dir=str(exp_dir / "tensorboard"))
+    tb_logger = TBLogger(log_dir=str(exp_dir / "tb_logs" / f"rank_{rank}"))
 
     logger.info(f'rank: {rank}. gpu: {gpu}. world_size: {args.world_size}')
 
@@ -106,9 +106,9 @@ def train(rank, args):
     for epoch in range(args.epochs):
         logger.debug(f'starting epoch {epoch}')
 
-        train_loss, loss_val = 0, 0
+        train_loss, loss_val = 0, np.NaN
         y_true_train, y_pred_train, y_true_val, y_pred_val = [], [], [], []
-        roc_auc_train, pr_auc_train, roc_auc_val, pr_auc_val = 0, 0, 0, 0
+        roc_auc_train, pr_auc_train, roc_auc_val, pr_auc_val = np.NaN, np.NaN, np.NaN, np.NaN
 
         for i, sample in enumerate(train_iterator):
             specs = sample['melspectrogram'].cuda(non_blocking=True)
@@ -140,6 +140,7 @@ def train(rank, args):
         # validation
         if not args.just_one_batch:
             if gpu==0 or args.distributed_validation:
+                loss_val = 0
                 with torch.no_grad():
                     for i, sample in enumerate(val_loader):
                         specs = sample['melspectrogram'].cuda(non_blocking=True)
