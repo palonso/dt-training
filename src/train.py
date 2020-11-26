@@ -14,7 +14,7 @@ import torch.nn as nn
 import torch.distributed as dist
 from sklearn import metrics
 
-from models.convnet import ConvNet
+import utils
 from modelfactory import ModelFactory
 from dataloader import dataloader
 from tblogger import TBLogger
@@ -23,43 +23,36 @@ from tblogger import TBLogger
 def train(rank, args):
     # for now one gpu per process
     args.rank = rank
+    args.exp_id = f"{args.timestamp}_{args.exp_name}"
     gpu = rank
-    # checkpoint_path = args.checkpoint_path
-
-    args.timestamp = datetime.now().strftime("%y%m%d-%H%M%S")
-    args.exp_id = f"{args.timestamp}-{args.exp_name}"
-
     exp_dir = Path(args.exp_dir, args.exp_id)
-    exp_dir.mkdir(parents=True)
 
-    logging.basicConfig(filename=str(exp_dir / "exp.log"),
-                        level=logging.DEBUG)
-    root_logger = logging.getLogger()
-    handler = logging.StreamHandler(sys.stdout)
-    handler.setLevel(args.logging_level)
-    root_logger.addHandler(handler)
+    exp_dir.mkdir(parents=True, exist_ok=True)
 
-    logging_name = logging.getLevelName(logging.getLogger().getEffectiveLevel())
-    logging.info(f'starting experiment "{args.exp_id}"')
-    logging.debug(f'logging level: {logging_name}')
+    logger = utils.get_logger(__name__, exp_dir / f"rank_{rank}.log")
 
-    logging.debug('experiment configuration:')
-    logging.debug(vars(args))
+    if rank == 0:
+        console_handler = utils.get_console_handler(args.logging_level)
+        logger.addHandler(console_handler)
+        logger.debug(f'console logging level: {args.logging_level}')
 
-    with open(str(exp_dir / "config.json"), "w" ) as f:
+    logger.info(f'starting experiment "{args.exp_id}"')
+    logger.debug(f'experiment configuration: {vars(args)}')
+
+    with open(str(exp_dir / f"config_{rank}.json"), "w" ) as f:
         json.dump(vars(args), f, indent=4)
 
     checkpoint_path = exp_dir / "model.checkpoint"
 
     tb_logger = TBLogger(log_dir=str(exp_dir / "tensorboard"))
 
-    logging.info(f'rank: {rank}. gpu: {gpu}. world_size: {args.world_size}')
+    logger.info(f'rank: {rank}. gpu: {gpu}. world_size: {args.world_size}')
 
-    logging.debug('Initiating process group...')
+    logger.debug('initiating process group...')
+    logger.debug('ok!')
     dist.init_process_group(backend='nccl',
                             rank=rank,
                             world_size=args.world_size)
-    logging.debug('ok!')
 
     torch.manual_seed(args.seed)
     model_factory = ModelFactory()
@@ -67,8 +60,8 @@ def train(rank, args):
 
     model_parameters = filter(lambda p: p.requires_grad, model.parameters())
     params = sum([np.prod(p.size()) for p in model_parameters])
-    logging.info(f'number of trainable params: {params}')
-    
+    logger.info(f'number of trainable params: {params}')
+
     torch.cuda.set_device(gpu)
     model.cuda(gpu)
 
@@ -90,7 +83,7 @@ def train(rank, args):
     train_loader = dataloader(args.train_pickle, args, mode='train')
 
     if args.distributed_validation:
-        logging.debug('using distributed validation')
+        logger.debug('using distributed validation')
 
     if gpu==0 or args.distributed_validation:
         val_loader = dataloader(args.val_pickle, args, mode='val')
@@ -100,16 +93,18 @@ def train(rank, args):
 
     start = datetime.now()
     total_step = len(train_loader)
-    logging.info(f'number of steps per epoch: {total_step}')
+    logger.info(f'number of steps per epoch: {total_step}')
 
     if args.just_one_batch:
-        logging.warning('`just-one-batch` mode on. Intended for development purposes')
+        logger.warning('`just-one-batch` mode on. Intended for development purposes')
         train_iterator = [next(iter(train_loader))]
     else:
         train_iterator = train_loader
+        logger.debug('entering the training loop')
 
-    logging.debug('entering the training loop')
     for epoch in range(args.epochs):
+        logger.debug(f'starting epoch {epoch}')
+
         train_loss, loss_val = 0, 0
         y_true_train, y_pred_train, y_true_val, y_pred_val = [], [], [], []
         roc_auc_train, pr_auc_train, roc_auc_val, pr_auc_val = 0, 0, 0, 0
@@ -119,7 +114,7 @@ def train(rank, args):
             tags = sample['tags'].cuda(non_blocking=True)
 
             # Forward pass
-            logits = model(specs)
+            logits, sigmoid = model(specs)
             loss = criterion(logits, tags)
 
             # Backward and optimize
@@ -130,7 +125,7 @@ def train(rank, args):
             train_loss += loss.item()
 
             y_true_train.append(tags.cpu().detach().numpy())
-            y_pred_train.append(logits.cpu().detach().numpy())
+            y_pred_train.append(sigmoid.cpu().detach().numpy())
 
         y_true_train = np.vstack(y_true_train)
         y_pred_train = np.vstack(y_pred_train)
@@ -139,8 +134,7 @@ def train(rank, args):
         pr_auc_train = metrics.average_precision_score(y_true_train, y_pred_train, average='macro')
         loss_train = train_loss / len(train_loader)
 
-        if gpu == 0:
-            logging.info(f'Step [{i + 1}/{total_step}]')
+        logger.info(f'Step [{i + 1}/{total_step}]')
 
         # validation
         if not args.just_one_batch:
@@ -170,15 +164,15 @@ def train(rank, args):
 
         elapsed = str(datetime.now() - start)
 
-        if gpu == 0:
-            logging.info(f'Epoch [{epoch + 1:03}/{args.epochs}]: | '
-                         f'Train Loss: {loss_train:.3f} | '
-                         f'Val Loss: {loss_val:.3f} | '
-                         f'Train ROC AUC: {roc_auc_train:.3f} | '
-                         f'Val ROC AUC: {roc_auc_val:.3f} | '
-                         f'Train AP: {pr_auc_train:.3f} | '
-                         f'Val AP: {pr_auc_val:.3f} | '
-                         f'Time : {elapsed}')
+        
+        logger.info(f'Epoch [{epoch + 1:03}/{args.epochs}]: | '
+                    f'Train Loss: {loss_train:.3f} | '
+                    f'Val Loss: {loss_val:.3f} | '
+                    f'Train ROC AUC: {roc_auc_train:.3f} | '
+                    f'Val ROC AUC: {roc_auc_val:.3f} | '
+                    f'Train AP: {pr_auc_train:.3f} | '
+                    f'Val AP: {pr_auc_val:.3f} | '
+                    f'Time : {elapsed}')
 
         tb_logger.write_epoch_stats(epoch, stats)
 
@@ -187,7 +181,7 @@ def train(rank, args):
             if loss_val <= best_loss_vas:
                 best_loss_vas = loss_val
                 torch.save(model.state_dict(), str(checkpoint_path))
-                logging.debug('lowest valiation loss achieved. Updating the model!')
+                logger.debug('lowest valiation loss achieved. Updating the model!')
 
         dist.barrier()
         map_location = {'cuda:%d' % 0: 'cuda:%d' % rank}
@@ -247,5 +241,7 @@ if __name__ == '__main__':
     os.environ['MASTER_PORT'] = args.master_port
     os.environ['NCCL_SOCKET_IFRAME'] = args.nccl_socket_iframe
     os.environ['NCCL_IB_DISABLE'] = args.nccl_ib_disable
-    
+
+    args.timestamp = datetime.now().strftime("%y%m%d-%H%M%S")
+
     mp.spawn(train, nprocs=args.nproc_per_node, args=(args,))
