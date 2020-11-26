@@ -25,7 +25,8 @@ def train(rank, args):
     args.rank = rank
     args.exp_id = f"{args.timestamp}_{args.exp_name}"
     gpu = rank
-    exp_dir = Path(args.exp_dir, args.exp_id)
+    exp_dir = Path(args.exp_base_dir, args.exp_id)
+    args.exp_dir = str(exp_dir)
 
     exp_dir.mkdir(parents=True, exist_ok=True)
 
@@ -227,7 +228,7 @@ if __name__ == '__main__':
     parser.add('--just-one-batch', action='store_true')
     parser.add('--distributed-validation', action='store_true')
     parser.add('--exp-name', help='the experiment name')
-    parser.add('--exp-dir', help='the experiment directory')
+    parser.add('--exp-base-dir', help='the experiment directory')
     parser.add('--x-size', type=int)
     parser.add('--y-size', type=int)
     parser.add('--model-name')

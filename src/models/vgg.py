@@ -2,7 +2,7 @@ import torch
 import torch.nn as nn
 
 
-class VGG(nn.Module):    
+class VGG(nn.Module):
     '''
     Short-chunk CNN architecture.
     So-called vgg-ish model with a small receptive field.
