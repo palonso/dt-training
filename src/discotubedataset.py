@@ -33,7 +33,7 @@ class DiscotubeDataset(Dataset):
             random.seed(a=seed, version=2)
 
         self.transform = transform
-        
+
         self.n_bands = 96
         self.patch_size = 64
 
@@ -69,7 +69,7 @@ class DiscotubeDataset(Dataset):
         else:
             raise(Exception('DiscotubeDataset: Sampling strategy not implemented'))
 
-        # Put the data in a numpy ndarray and add channel axis         
+        # put the data in a numpy ndarray and add channel axis
         melspectrogram = np.expand_dims(np.array(fp, dtype='float32'), axis=0)
 
         del fp

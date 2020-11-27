@@ -5,7 +5,7 @@ from multilabel_balanced_sampler import MultilabelBalancedRandomSampler
 from torch.utils.data.sampler import RandomSampler
 import logging
 
-def dataloader(pickle_file, args, mode='train'):
+def DataLoader(pickle_file, args, mode='train'):
     num_replicas = args.local_world_size
 
     if mode == 'train':
@@ -17,7 +17,7 @@ def dataloader(pickle_file, args, mode='train'):
         sampling_strategy = args.val_sampling_strategy
         batch_size = args.val_batch_size
         sampler = 'random'
-        # if not args.distributed_validation:
+        # if not args.distributed_val:
         #     num_replicas = 1
 
     # Data loading code
