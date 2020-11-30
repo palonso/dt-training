@@ -26,6 +26,7 @@ class VanillaTrainer(Trainer):
         self.conf = Namespace(**vars(conf), **vars(manager_conf))
 
         self.logger = logging.getLogger('TrainManager.VanillaTrainer')
+        self.logger.info(f"{conf}")
 
         # put common variables into the main class scope
         self.learning_rate = self.conf.learning_rate
