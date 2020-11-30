@@ -32,6 +32,8 @@ class VanillaTrainer(Trainer):
         self.epochs = self.conf.epochs
 
         # validation logic
+        if self.conf.distributed_val:
+            self.logger.debug('using distributed validation')
         self.val_inference = not self.conf.just_one_batch
         self.val_scoring = self.val_inference and (self.i_am_chief or self.conf.distributed_val)
 
@@ -47,9 +49,6 @@ class VanillaTrainer(Trainer):
         # define loss function (criterion) and optimizer
         self.criterion = nn.MultiLabelSoftMarginLoss().cuda(self.rank)
         self.optimizer = torch.optim.Adam(self.model.parameters(), self.learning_rate)
-
-        if self.conf.distributed_val:
-            self.logger.debug('using distributed validation')
 
     def __define_model(self):
         model = ModelFactory().create(self.conf.model_name)
