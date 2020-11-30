@@ -5,9 +5,9 @@ class TrainerFactory:
     def __init__(self):
         self.logger = logging.getLogger('TrainManager.TrainerFactory')
 
-    def create(self, name, *args):
+    def create(self, name, *args, **kwargs):
         try:
-            return eval(f"{name.lower()}.{name}")(*args)
+            return eval(f"{name.lower()}.{name}")(*args, **kwargs)
         except NameError:
             self.logger.error(f"the trainer `{name.lower()}.{name}` is not registered in the factory."
                                " may be missing from `trainers/__init__.py`?")
