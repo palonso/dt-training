@@ -9,7 +9,6 @@ import torch
 import torch.distributed as dist
 
 import utils
-from tblogger import TBLogger
 from trainerfactory import TrainerFactory
 
 
@@ -37,8 +36,6 @@ class TrainManager:
             self.__chief_to_console()
         self.__log_config()
 
-        self.tensorboard = TBLogger(log_dir=str(self.exp_dir / "tb_logs" / f"rank_{self.rank}"))
-
         self.logger.debug('initiating process group...')
         dist.init_process_group(backend='nccl',
                                 init_method='env://')
@@ -46,8 +43,7 @@ class TrainManager:
 
         self.trainer = TrainerFactory().create(self.conf.trainer,
                                                self.conf,
-                                               unknown_args,
-                                               self.tensorboard)
+                                               arg_line=unknown_args)
 
     def __chief_to_console(self):
         console_handler = utils.get_console_handler(self.conf.logging_level)

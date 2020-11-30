@@ -13,25 +13,23 @@ from sklearn import metrics
 
 sys.path.append("..")
 import utils
+from .trainer import Trainer
 from modelfactory import ModelFactory
 from dataloader import DataLoader
 
 
-class VanillaTrainer:
-    def __init__(self, manager_conf, arg_line, tensorboard):
+class VanillaTrainer(Trainer):
+    def __init__(self, manager_conf, arg_line=None):
+        super().__init__(manager_conf)
+
         conf, _ = self.__parse_args(arg_line)
         self.conf = Namespace(**vars(conf), **vars(manager_conf))
 
-        self.logger =  logging.getLogger('TrainManager.VanillaTrainer')
-        self.tensorboard = tensorboard
+        self.logger = logging.getLogger('TrainManager.VanillaTrainer')
 
         # put common variables into the main class scope
-        self.rank = self.conf.local_rank
         self.learning_rate = self.conf.learning_rate
         self.epochs = self.conf.epochs
-        self.checkpoint_path = Path(self.conf.exp_dir, "model.checkpoint")
-
-        self.i_am_chief = self.rank == 0
 
         # validation logic
         self.val_inference = not self.conf.just_one_batch
