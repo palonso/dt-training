@@ -9,6 +9,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.distributed as dist
+from torch.optim.lr_scheduler import ReduceLROnPlateau
 from sklearn import metrics
 
 sys.path.append("..")
@@ -29,7 +30,6 @@ class VanillaTrainer(Trainer):
         self.logger.info(f"{conf}")
 
         # put common variables into the main class scope
-        self.learning_rate = self.conf.learning_rate
         self.epochs = self.conf.epochs
 
         # validation logic
@@ -49,7 +49,9 @@ class VanillaTrainer(Trainer):
 
         # define loss function (criterion) and optimizer
         self.criterion = nn.MultiLabelSoftMarginLoss().cuda(self.rank)
-        self.optimizer = torch.optim.Adam(self.model.parameters(), self.learning_rate)
+        self.optimizer = torch.optim.Adam(self.model.parameters(), self.conf.lr)
+        self.scheduler = ReduceLROnPlateau(self.optimizer, mode='max', factor=self.conf.lr_decay,
+            patience=self.conf.lr_patience, verbose=True)
 
     def __define_model(self):
         model = ModelFactory().create(self.conf.model_name)
@@ -175,6 +177,8 @@ class VanillaTrainer(Trainer):
 
             if self.val_inference:
                 loss_val, y_true_val, y_pred_val = self.__validate()
+                self.scheduler.step(loss_val)
+
                 if self.val_scoring:
                     roc_auc_val, pr_auc_val = self.__compute_metrics(y_true_val, y_pred_val)
 
@@ -237,7 +241,9 @@ class VanillaTrainer(Trainer):
         parser.add('--y-size', type=int)
         parser.add('--seed', help='seed number', type=int)
         parser.add('--epochs', type=int, help='number of total epochs to run')
-        parser.add('--learning-rate', type=float, help='initial learning rate')
+        parser.add('--lr', type=float, help='initial learning rate')
+        parser.add('--lr-decay', type=float, help='learning rate decay')
+        parser.add('--lr-patience', type=float, help='learning rate patience')
         parser.add('--train-batch-size', type=int, help='train batch size')
         parser.add('--val-batch-size', type=int, help='val batch size')
 
