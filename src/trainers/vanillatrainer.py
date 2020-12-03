@@ -155,7 +155,7 @@ class VanillaTrainer(Trainer):
                 tracks_sigmoid = torch.zeros(max_songs_per_batch, sigmoid.shape[1], dtype=torch.float32).cuda(self.rank)
 
                 for j, key in enumerate(unique_keys):
-                    if j > max_songs_per_batch:
+                    if j >= max_songs_per_batch:
                         self.logger.warning(f'maxminum number of songs per validation batch ({max_songs_per_batch}) reached '
                                             f'in a batch with ({len(unique_keys)}) unique tracks.')
                         break
