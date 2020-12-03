@@ -11,6 +11,7 @@ import torch.nn as nn
 import torch.distributed as dist
 from torch.optim.lr_scheduler import ReduceLROnPlateau
 from sklearn import metrics
+from tqdm import tqdm
 
 sys.path.append("..")
 import utils
@@ -88,10 +89,15 @@ class VanillaTrainer(Trainer):
 
         if self.val_inference:
             self.val_iterator = DataLoader(self.conf.val_pickle, self.conf, mode='val')
+            self.val_steps = len(self.val_iterator)
+            self.logger.info(f'number of validation steps per epoch: {self.val_steps}')
 
     def __train(self):
         loss_list, y_true, y_pred = [], [], []
 
+        # stdout is enought for the progress bar. Don't log this
+        if self.i_am_chief:
+            pbar = tqdm(self.train_iterator, desc='train iter')
         for i, sample in enumerate(self.train_iterator):
             specs = sample['melspectrogram'].cuda(non_blocking=True)
             tags = sample['tags'].cuda(non_blocking=True)
@@ -108,18 +114,27 @@ class VanillaTrainer(Trainer):
 
             y_true.append(tags.cpu().detach().numpy())
             y_pred.append(sigmoid.cpu().detach().numpy())
-            self.logger.info(f'Step [{i + 1}/{self.train_steps}]')
 
-        loss = np.sum(loss_list) / len(self.train_iterator)
+            self.logger.debug(f'Step [{i + 1}/{self.train_steps}]')
+            if self.i_am_chief:
+                pbar.update()
+
+        if self.i_am_chief:
+            pbar.close()
+
+        loss = np.mean(loss_list)
         return loss, np.vstack(y_true), np.vstack(y_pred)
 
     def __validate(self):
         loss_list, y_true, y_pred = [], [], []
 
         with torch.no_grad():
+            if self.i_am_chief:
+                pbar = tqdm(self.val_iterator, desc='valid iter')
             for i, sample in enumerate(self.val_iterator):
                 specs = sample['melspectrogram'].cuda(non_blocking=True)
                 tags = sample['tags'].cuda(non_blocking=True)
+                keys = sample['key']
 
                 # forward pass
                 logits, sigmoid = self.model(specs)
@@ -127,25 +142,57 @@ class VanillaTrainer(Trainer):
 
                 loss_list.append(loss.item())
 
+                unique_keys = list(set(keys))
+                # self.logger.debug(f'{len(unique_keys)} unique validation keys out of {len(keys)}')
+
+                patch_hop_size_seconds = self.conf.patch_hop_size * self.conf.hop_size / self.conf.sample_rate
+                max_patches_per_track = int(np.ceil(self.conf.evaluation_time / patch_hop_size_seconds))
+
+                # all reduce tensors must have an uniform shape. let's define a miximum number of tracks to process
+                # per batch
+                max_songs_per_batch = 2 * self.conf.val_batch_size // max_patches_per_track
+                tracks_tags = torch.zeros(max_songs_per_batch, tags.shape[1], dtype=torch.float32).cuda(self.rank)
+                tracks_sigmoid = torch.zeros(max_songs_per_batch, sigmoid.shape[1], dtype=torch.float32).cuda(self.rank)
+
+                for j, key in enumerate(unique_keys):
+                    if j > max_songs_per_batch:
+                        self.logger.warning(f'maxminum number of songs per validation batch ({max_songs_per_batch}) reached '
+                                            f'in a batch with ({len(unique_keys)}) unique tracks.')
+                        break
+                    indices = torch.tensor([l for l, k in enumerate(keys) if k == key], dtype=torch.int64).cuda(self.rank)
+                    track_sigmoid = torch.index_select(sigmoid, 0, indices)
+                    tracks_sigmoid[j, :] = torch.mean(track_sigmoid, dim=0)
+                    tracks_tags[j, :] = tags[indices[0], :]
+
                 # gather the predictions in rank 0
                 if not self.conf.distributed_val:
-                    tag_list = [torch.zeros_like(tags) for _ in range(self.conf.local_world_size)]
-                    sigmoid_list = [torch.zeros_like(sigmoid) for _ in range(self.conf.local_world_size)]
+                    tag_list = [torch.zeros_like(tracks_tags) for _ in range(self.conf.local_world_size)]
+                    sigmoid_list = [torch.zeros_like(tracks_sigmoid) for _ in range(self.conf.local_world_size)]
+                    # keys_list = [torch.zeros_like(keys) for _ in range(self.conf.local_world_size)]
 
                     # ideally we could use `gather` as we just need
                     # the data in the chief but it is not implemented
                     # in our backend (NCCL) yet so we are using `all_gather`
                     # which makes them avaiable in al the ranks.
-                    dist.all_gather(tag_list, tags)
-                    dist.all_gather(sigmoid_list, sigmoid)
+                    dist.all_gather(tag_list, tracks_tags)
+                    dist.all_gather(sigmoid_list, tracks_sigmoid)
 
                     if self.i_am_chief:
                         for t, s in zip(tag_list, sigmoid_list):
-                            y_true.append(t.cpu().detach().numpy())
-                            y_pred.append(s.cpu().detach().numpy())
+                            indices = torch.sum(s, dim=1).bool()
+                            y_true.append(t[indices].cpu().detach().numpy())
+                            y_pred.append(s[indices].cpu().detach().numpy())
                 else:
-                    y_true.append(tags.cpu().detach().numpy())
-                    y_pred.append(sigmoid.cpu().detach().numpy())
+                    indices = torch.sum(tracks_tags, dim=1).bool()
+                    y_true.append(tracks_tags[indices].cpu().detach().numpy())
+                    y_pred.append(tracks_sigmoid[indices].cpu().detach().numpy())
+
+                self.logger.debug(f'Step [{i + 1}/{self.val_steps}]')
+                if self.i_am_chief:
+                    pbar.update()
+
+            if self.i_am_chief:
+                pbar.close()
 
         self.logger.debug(f"val tags size {len(y_true)}")
         self.logger.debug(f"val preds size {len(y_pred)}")
@@ -154,7 +201,7 @@ class VanillaTrainer(Trainer):
             y_true = np.vstack(y_true)
             y_pred = np.vstack(y_pred)
 
-        loss = np.sum(loss_list) / len(self.val_iterator)
+        loss = np.mean(loss_list)
         return loss, y_true, y_pred
 
     def __compute_metrics(self, y_true, y_pred):
@@ -172,10 +219,12 @@ class VanillaTrainer(Trainer):
         for epoch in range(self.epochs):
             self.logger.debug(f'starting epoch {epoch + 1}')
 
+            self.logger.debug('training phase')
             loss_train, y_true_train, y_pred_train = self.__train()
             roc_auc_train, pr_auc_train = self.__compute_metrics(y_true_train, y_pred_train)
 
             if self.val_inference:
+                self.logger.debug('validation phase')
                 loss_val, y_true_val, y_pred_val = self.__validate()
                 self.scheduler.step(loss_val)
 
@@ -237,8 +286,13 @@ class VanillaTrainer(Trainer):
         parser.add('--train-sampling-strategy', help='train sampling strategy')
         parser.add('--val-sampling-strategy', help='val sampling strategy')
         parser.add('--model-name')
-        parser.add('--x-size', type=int)
-        parser.add('--y-size', type=int)
+        parser.add('--x-size', type=int, help='mel band frames')
+        parser.add('--y-size', type=int, help='mel band bins')
+        parser.add('--sample-rate', type=int, help='audio analysis sample rate')
+        parser.add('--hop-size', type=int, help='audio analysis hop size')
+        parser.add('--frame-size', type=int, help='audio analysis frame size')
+        parser.add('--patch-hop-size', type=int, help='hop size between adjacent patches for validation')
+        parser.add('--evaluation-time', type=float, help='max time for evalution in seconds')
         parser.add('--seed', help='seed number', type=int)
         parser.add('--epochs', type=int, help='number of total epochs to run')
         parser.add('--lr', type=float, help='initial learning rate')
