@@ -51,8 +51,8 @@ class VanillaTrainer(Trainer):
         # define loss function (criterion) and optimizer
         self.criterion = nn.MultiLabelSoftMarginLoss().cuda(self.rank)
         self.optimizer = torch.optim.Adam(self.model.parameters(), self.conf.lr)
-        self.scheduler = ReduceLROnPlateau(self.optimizer, mode='max', factor=self.conf.lr_decay,
-            patience=self.conf.lr_patience, verbose=True)
+        self.scheduler = ReduceLROnPlateau(self.optimizer, mode='min', factor=self.conf.lr_decay,
+            patience=self.conf.lr_patience, verbose=self.i_am_chief)
 
     def __define_model(self):
         model = ModelFactory().create(self.conf.model_name)
@@ -297,7 +297,7 @@ class VanillaTrainer(Trainer):
         parser.add('--epochs', type=int, help='number of total epochs to run')
         parser.add('--lr', type=float, help='initial learning rate')
         parser.add('--lr-decay', type=float, help='learning rate decay')
-        parser.add('--lr-patience', type=float, help='learning rate patience')
+        parser.add('--lr-patience', type=int, help='learning rate patience')
         parser.add('--train-batch-size', type=int, help='train batch size')
         parser.add('--val-batch-size', type=int, help='val batch size')
 
