@@ -2,36 +2,42 @@ import torch
 import numpy as np
 from discotubedataset import DiscotubeDataset
 from multilabel_balanced_sampler import MultilabelBalancedRandomSampler
-from torch.utils.data.sampler import RandomSampler
+from torch.utils.data.sampler import RandomSampler, SequentialSampler
+from torch.utils.data.distributed import DistributedSampler
 import logging
 
-def DataLoader(pickle_file, args, mode='train'):
-    num_replicas = args.local_world_size
+def DataLoader(pickle_file, conf, mode='train'):
+    num_replicas = conf.local_world_size
 
     if mode == 'train':
-        sampling_strategy = args.train_sampling_strategy
-        batch_size = args.train_batch_size
+        batch_size = conf.train_batch_size
         sampler = 'multilabel_balanced_random'
-        
+
+        dataset = DiscotubeDataset(pickle_file=pickle_file,
+            root=conf.root,
+            conf=conf,
+            sampling_strategy=conf.train_sampling_strategy)
+
+        rank_sampler = DistributedSampler(dataset,
+            num_replicas=num_replicas,
+            rank=conf.local_rank)
+
+        # get the indices for this rank.
+        indices = [i for i in iter(rank_sampler)]
+
     elif mode == 'val':
-        sampling_strategy = args.val_sampling_strategy
-        batch_size = args.val_batch_size
-        sampler = 'random'
-        # if not args.distributed_val:
-        #     num_replicas = 1
+        batch_size = conf.val_batch_size
+        sampler = 'sequential'
 
-    # Data loading code
-    dataset = DiscotubeDataset(pickle_file=pickle_file,
-        root=args.root,
-        sampling_strategy=sampling_strategy)
+        dataset = DiscotubeDataset(pickle_file=pickle_file,
+            root=conf.root,
+            conf=conf,
+            sampling_strategy=conf.val_sampling_strategy)
 
-    rank_sampler = torch.utils.data.distributed.DistributedSampler(
-        dataset,
-        num_replicas=num_replicas,
-        rank=args.local_rank)
+        samples_per_rank = len(dataset) // num_replicas
+        indices = range(conf.local_rank * samples_per_rank,
+                        (conf.local_rank + 1 ) * samples_per_rank)
 
-    # get the indices for this rank.
-    indices = [i for i in iter(rank_sampler)]
     logging.info(f'number of samples per process: {len(indices)}')
 
     rank_subset = torch.utils.data.Subset(dataset, indices)
@@ -39,11 +45,14 @@ def DataLoader(pickle_file, args, mode='train'):
 
     if sampler == 'multilabel_balanced_random':
         sampler = MultilabelBalancedRandomSampler(
-            labels, 
+            labels,
             class_choice="least_sampled")
 
-    elif  sampler == 'random':
+    elif sampler == 'random':
         sampler = RandomSampler(rank_subset)
+
+    elif sampler == 'sequential':
+        sampler = SequentialSampler(rank_subset)
 
     else:
         raise Exception('dataloder: sampler type not implemented')
