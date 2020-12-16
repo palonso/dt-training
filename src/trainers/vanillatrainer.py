@@ -6,6 +6,7 @@ from pathlib import Path
 import logging
 
 import numpy as np
+import torch.onnx
 import torch
 import torch.nn as nn
 import torch.distributed as dist
@@ -64,6 +65,9 @@ class VanillaTrainer(Trainer):
         params = sum([np.prod(p.size()) for p in model_parameters])
         self.logger.info(f'number of trainable params: {params}')
 
+        # create a sigmoid layer to transform logits into activations
+        self.sigmoid_layer = nn.Sigmoid()
+
         # wrap the model
         self.model = nn.parallel.DistributedDataParallel(model,
             device_ids=[self.rank],
@@ -103,7 +107,8 @@ class VanillaTrainer(Trainer):
             tags = sample['tags'].cuda(non_blocking=True)
 
             # forward pass
-            logits, sigmoid = self.model(specs)
+            logits = self.model(specs)
+            sigmoid = self.sigmoid_layer(logits)
             loss = self.criterion(logits, tags)
 
             # backward and optimize
@@ -137,7 +142,8 @@ class VanillaTrainer(Trainer):
                 keys = sample['key']
 
                 # forward pass
-                logits, sigmoid = self.model(specs)
+                logits = self.model(specs)
+                sigmoid = self.sigmoid_layer(logits)
                 loss = self.criterion(logits, tags)
 
                 loss_list.append(loss.item())
@@ -209,6 +215,20 @@ class VanillaTrainer(Trainer):
         pr_auc = metrics.average_precision_score(y_true, y_pred, average='macro')
         return roc_auc, pr_auc
 
+    def __export_to_onnx(self):
+        dummy_input = torch.randn(1, self.conf.x_size, self.conf.y_size, device='cuda')
+        model_with_sigmoid = nn.Sequential(self.model.module, nn.Sigmoid())
+        torch.onnx.export(model_with_sigmoid, dummy_input,
+                          self.checkpoint_path.with_suffix('.onnx'),
+                          # verbose=True,
+                          opset_version=11,
+                          do_constant_folding=True,
+                          input_names=['melspectrogram'],
+                          output_names=['activations'],
+                          dynamic_axes={'melspectrogram': {0: 'batch_size'},
+                                        'activations': {0: 'batch_size'}}
+                          )
+
     def run(self):
         self.logger.debug('entering the training loop')
 
@@ -263,6 +283,7 @@ class VanillaTrainer(Trainer):
                 if (loss_val <= best_loss_val) or (epoch == 0):
                     best_loss_val = loss_val
                     torch.save(self.model.state_dict(), self.checkpoint_path)
+                    self.__export_to_onnx()
                     self.logger.debug('lowest valiation loss achieved. Updating the model!')
 
             self.logger.debug('waiting on barrier to reload the model')

@@ -63,17 +63,13 @@ class VGG(nn.Module):
         x = self.layer5(x)
         x = self.layer6(x)
         x = self.layer7(x)
-        x = x.squeeze(2)
-
-        x = x.squeeze(2)
-#         print(x.shape)
+        x = torch.flatten(outb4, start_dim=1, end_dim=-1)
+        
         # Dense
         x = self.dense1(x)
         x = self.bn(x)
         x = self.relu(x)
         x = self.dropout(x)
         logits = self.dense2(x)
-        sigmoid = nn.Sigmoid()(logits)
 
-        return logits, sigmoid
-
+        return logits
