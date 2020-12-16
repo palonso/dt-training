@@ -284,7 +284,7 @@ class VanillaTrainer(Trainer):
                     best_loss_val = loss_val
                     torch.save(self.model.state_dict(), self.checkpoint_path)
                     self.__export_to_onnx()
-                    self.logger.debug('lowest valiation loss achieved. Updating the model!')
+                    self.logger.info('lowest validation loss achieved. Updating the model!')
 
             self.logger.debug('waiting on barrier to reload the model')
             dist.barrier()
@@ -303,7 +303,7 @@ class VanillaTrainer(Trainer):
         parser.add('--train-pickle', help='pickle file with the training indices')
         parser.add('--val-pickle', help='pickle file with the validation indices')
         parser.add('--just-one-batch', type=utils.str2bool, nargs='?',
-            const=True, default=False, help="activate  `just-one-batch`")
+            const=True, default=False, help="activate `just-one-batch`")
         parser.add('--train-sampling-strategy', help='train sampling strategy')
         parser.add('--val-sampling-strategy', help='val sampling strategy')
         parser.add('--model-name')
