@@ -55,6 +55,8 @@ class VGG(nn.Module):
         self.relu = nn.ReLU()
 
     def forward(self, x):
+        x = torch.unsqueeze(x, 1)
+
         # CNN
         x = self.layer1(x)
         x = self.layer2(x)
@@ -63,8 +65,8 @@ class VGG(nn.Module):
         x = self.layer5(x)
         x = self.layer6(x)
         x = self.layer7(x)
-        x = torch.flatten(outb4, start_dim=1, end_dim=-1)
-        
+        x = torch.flatten(x, start_dim=1, end_dim=-1)
+
         # Dense
         x = self.dense1(x)
         x = self.bn(x)

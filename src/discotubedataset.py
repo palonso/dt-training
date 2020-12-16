@@ -101,13 +101,13 @@ class DiscotubeDataset(Dataset):
         fp = np.memmap(melspectrogram_file, dtype='float16', mode='r',
                        shape=(frames_to_read, self.n_bands), offset=offset)
 
-        # put the data in a numpy ndarray and add channel axis
-        melspectrogram = np.expand_dims(np.array(fp, dtype='float32'), axis=0)
+        # put the data in a numpy ndarray
+        melspectrogram = np.array(fp, dtype='float32')
 
         if frames_to_read < self.patch_size:
             padding_size = self.patch_size - frames_to_read
-            melspectrogram = np.hstack([melspectrogram, np.zeros([1, padding_size, self.n_bands])])
-            melspectrogram = np.roll(melspectrogram, padding_size//2, axis=1)  # center the padding
+            melspectrogram = np.vstack([melspectrogram, np.zeros([padding_size, self.n_bands])])
+            melspectrogram = np.roll(melspectrogram, padding_size // 2, axis=0)  # center the padding
             np.save(f'padded_melspetrogram.npy', melspectrogram)
             self.logger.debug(f'incomplete audio frame {key}. n of frames: {frames_to_read}. shape: {melspectrogram.shape}')
 
