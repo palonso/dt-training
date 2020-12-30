@@ -241,7 +241,7 @@ class VanillaTrainer(Trainer):
 
         start = datetime.now()
         best_loss_val, loss_val = np.Inf, np.Inf
-        stats = {'Loss': [], 'AUC/ROC': [], 'AUC/PR': []}
+        stats = {'Loss': [], 'AUC/ROC': [], 'AUC/PR': [], 'LR': []}
 
         for epoch in range(self.epochs):
             self.logger.debug(f'starting epoch {epoch + 1}')
@@ -281,6 +281,8 @@ class VanillaTrainer(Trainer):
             else:
                 stats['AUC/ROC'].append({'train': roc_auc_train})
                 stats['AUC/PR'].append({'train': pr_auc_train})
+
+            stats['LR'].append({'lr': self.optimizer.param_groups[0]['lr']})
 
             self.logger.info(' | '.join(epoch_log))
             self.tensorboard.write_epoch_stats(epoch, stats)
