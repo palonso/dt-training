@@ -63,7 +63,7 @@ class VanillaTrainer(Trainer):
             patience=self.conf.lr_patience, verbose=self.i_am_chief)
 
     def __define_model(self):
-        model = ModelFactory().create(self.conf.model_name)
+        model = ModelFactory().create(self.conf.model_name, n_classes=self.conf.n_classes)
         torch.cuda.set_device(self.rank)
         model.cuda(self.rank)
 
@@ -316,6 +316,7 @@ class VanillaTrainer(Trainer):
         parser.add('--model-name')
         parser.add('--x-size', type=int, help='mel band frames')
         parser.add('--y-size', type=int, help='mel band bins')
+        parser.add('--n-classes', type=int, help='number of classes')
         parser.add('--sample-rate', type=int, help='audio analysis sample rate')
         parser.add('--hop-size', type=int, help='audio analysis hop size')
         parser.add('--frame-size', type=int, help='audio analysis frame size')
