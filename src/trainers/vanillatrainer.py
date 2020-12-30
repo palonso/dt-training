@@ -4,6 +4,7 @@ import configargparse
 from argparse import Namespace
 from pathlib import Path
 import logging
+import random
 
 import numpy as np
 import torch.onnx
@@ -43,6 +44,12 @@ class VanillaTrainer(Trainer):
         # use a different seed in each rank so
         # the tey do not intialize to the same values
         torch.manual_seed(self.conf.seed + self.rank)
+        np.random.seed(self.conf.seed + self.rank)
+        random.seed(self.conf.seed + self.rank)
+
+        # required for multi-gpu deterministic behavior
+        # torch.set_deterministic(True)
+        # os.environ['CUBLAS_WORKSPACE_CONFIG']=':4096:8'
 
         # define and initliaze model
         self.__define_model()
