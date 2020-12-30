@@ -298,6 +298,11 @@ class VanillaTrainer(Trainer):
             map_location = {'cuda:%d' % 0: 'cuda:%d' % self.rank}
             self.model.load_state_dict(
                 torch.load(self.checkpoint_path, map_location=map_location))
+
+            if epoch == self.conf.weight_decay_delay:
+                self.logger.info(f'setting weight decay to {self.conf.weight_decay}')
+                self.optimizer.param_groups[0]['weight_decay'] = self.conf.weight_decay
+
             self.logger.debug('epoch finished')
 
     @staticmethod
@@ -327,6 +332,8 @@ class VanillaTrainer(Trainer):
         parser.add('--lr', type=float, help='initial learning rate')
         parser.add('--lr-decay', type=float, help='learning rate decay')
         parser.add('--lr-patience', type=int, help='learning rate patience')
+        parser.add('--weight-decay', type=float, help='weight decay')
+        parser.add('--weight-decay-delay', type=int, help='number of epochs before applying weight decay')
         parser.add('--train-batch-size', type=int, help='train batch size')
         parser.add('--val-batch-size', type=int, help='val batch size')
 
