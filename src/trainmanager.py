@@ -26,6 +26,7 @@ class TrainManager:
         # put common variables into the class namespace
         self.rank = self.conf.local_rank
         self.i_am_chief = self.rank == 0
+        self.conf.device = self.rank + self.conf.gpu_shift
 
         # local_world_size is as more familiar name
         self.conf.local_world_size = self.conf.nproc_per_node
@@ -83,6 +84,7 @@ class TrainManager:
             default='INFO')
         parser.add('--node-rank', default=0, type=int)
         parser.add('--local_rank', default=0, type=int)
+        parser.add('--gpu-shift', default=0, type=int)
         parser.add('--nproc-per-node', help='number of processes per node',
             default=1, type=int)
         parser.add('--trainer', default='VanillaTrainer', help='trainer type')

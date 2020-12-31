@@ -14,6 +14,7 @@ class Trainer:
 
         # put common variables into the main class scope
         self.rank = self.conf.local_rank
+        self.device = self.conf.device
         self.checkpoint_path = Path(self.conf.exp_dir, "model.checkpoint")
 
         self.i_am_chief = self.rank == 0

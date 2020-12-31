@@ -57,15 +57,15 @@ class VanillaTrainer(Trainer):
         self.__define_dataloaders()
 
         # define loss function (criterion) and optimizer
-        self.criterion = nn.MultiLabelSoftMarginLoss().cuda(self.rank)
+        self.criterion = nn.MultiLabelSoftMarginLoss().cuda(self.device)
         self.optimizer = torch.optim.Adam(self.model.parameters(), self.conf.lr)
         self.scheduler = ReduceLROnPlateau(self.optimizer, mode='min', factor=self.conf.lr_decay,
             patience=self.conf.lr_patience, verbose=self.i_am_chief)
 
     def __define_model(self):
         model = ModelFactory().create(self.conf.model_name, n_classes=self.conf.n_classes)
-        torch.cuda.set_device(self.rank)
-        model.cuda(self.rank)
+        torch.cuda.set_device(self.device)
+        model.cuda(self.device)
 
         # compute number of parameters
         model_parameters = filter(lambda p: p.requires_grad, model.parameters())
@@ -77,8 +77,8 @@ class VanillaTrainer(Trainer):
 
         # wrap the model
         self.model = nn.parallel.DistributedDataParallel(model,
-            device_ids=[self.rank],
-            output_device=self.rank)
+            device_ids=[self.device],
+            output_device=self.device)
 
     def __model_initialization(self):
         for m in self.model.parameters():
@@ -164,15 +164,15 @@ class VanillaTrainer(Trainer):
                 # all reduce tensors must have an uniform shape. let's define a miximum number of tracks to process
                 # per batch
                 max_songs_per_batch = 2 * self.conf.val_batch_size // max_patches_per_track
-                tracks_tags = torch.zeros(max_songs_per_batch, tags.shape[1], dtype=torch.float32).cuda(self.rank)
-                tracks_sigmoid = torch.zeros(max_songs_per_batch, sigmoid.shape[1], dtype=torch.float32).cuda(self.rank)
+                tracks_tags = torch.zeros(max_songs_per_batch, tags.shape[1], dtype=torch.float32).cuda(self.device)
+                tracks_sigmoid = torch.zeros(max_songs_per_batch, sigmoid.shape[1], dtype=torch.float32).cuda(self.device)
 
                 for j, key in enumerate(unique_keys):
                     if j >= max_songs_per_batch:
                         self.logger.warning(f'maxminum number of songs per validation batch ({max_songs_per_batch}) reached '
                                             f'in a batch with ({len(unique_keys)}) unique tracks.')
                         break
-                    indices = torch.tensor([l for l, k in enumerate(keys) if k == key], dtype=torch.int64).cuda(self.rank)
+                    indices = torch.tensor([l for l, k in enumerate(keys) if k == key], dtype=torch.int64).cuda(self.device)
                     track_sigmoid = torch.index_select(sigmoid, 0, indices)
                     tracks_sigmoid[j, :] = torch.mean(track_sigmoid, dim=0)
                     tracks_tags[j, :] = tags[indices[0], :]
@@ -297,7 +297,7 @@ class VanillaTrainer(Trainer):
 
             self.logger.debug('waiting on barrier to reload the model')
             dist.barrier()
-            map_location = {'cuda:%d' % 0: 'cuda:%d' % self.rank}
+            map_location = {'cuda:%d' % self.conf.gpu_shift: 'cuda:%d' % self.device}
             self.model.load_state_dict(
                 torch.load(self.checkpoint_path, map_location=map_location))
 
