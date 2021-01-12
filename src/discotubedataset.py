@@ -27,9 +27,9 @@ class DiscotubeDataset(Dataset):
 
         self.logger = logging.getLogger('TrainManager.DiscotubeDataset')
 
-        if conf.seed:
+        if conf.seed is not None:
             self.seed = conf.seed
-            numpy.random.seed(seed=self.seed)
+            np.random.seed(seed=self.seed)
             random.seed(a=self.seed, version=2)
 
         self.transform = transform
