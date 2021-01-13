@@ -21,6 +21,7 @@ class DiscotubeDataset(Dataset):
         """
         self.gt = pickle.load(open(pickle_file, 'rb'))
         self.keys = list(self.gt.keys())
+        self.tracks = self.keys
 
         self.root = root
         self.sampling_strategy=sampling_strategy

@@ -37,6 +37,7 @@ def DataLoader(pickle_file, conf, mode='train'):
         samples_per_rank = len(dataset) // num_replicas
         indices = range(conf.local_rank * samples_per_rank,
                         (conf.local_rank + 1 ) * samples_per_rank)
+        conf.tracks_per_rank = len(dataset.tracks) // num_replicas
 
     logging.info(f'number of samples per process: {len(indices)}')
 
