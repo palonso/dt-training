@@ -139,6 +139,8 @@ class VanillaTrainer(Trainer):
 
     def __validate(self):
         loss_list, y_true, y_pred = [], [], []
+        sigmoid_list, tags_list, keys_list = [], [], []
+        unique_keys = set()
 
         with torch.no_grad():
             if self.i_am_chief:
@@ -155,64 +157,61 @@ class VanillaTrainer(Trainer):
 
                 loss_list.append(loss.item())
 
-                unique_keys = list(set(keys))
-                # self.logger.debug(f'{len(unique_keys)} unique validation keys out of {len(keys)}')
+                sigmoid_list.append(sigmoid)
+                tags_list.append(tags)
+                keys_list.append(keys)
+                unique_keys.update(set(keys))
 
-                patch_hop_size_seconds = self.conf.patch_hop_size * self.conf.hop_size / self.conf.sample_rate
-                max_patches_per_track = int(np.ceil(self.conf.evaluation_time / patch_hop_size_seconds))
-
-                # all reduce tensors must have an uniform shape. let's define a miximum number of tracks to process
-                # per batch
-                max_songs_per_batch = 2 * self.conf.val_batch_size // max_patches_per_track
-                tracks_tags = torch.zeros(max_songs_per_batch, tags.shape[1], dtype=torch.float32).cuda(self.device)
-                tracks_sigmoid = torch.zeros(max_songs_per_batch, sigmoid.shape[1], dtype=torch.float32).cuda(self.device)
-
-                for j, key in enumerate(unique_keys):
-                    if j >= max_songs_per_batch:
-                        self.logger.warning(f'maxminum number of songs per validation batch ({max_songs_per_batch}) reached '
-                                            f'in a batch with ({len(unique_keys)}) unique tracks.')
-                        break
-                    indices = torch.tensor([l for l, k in enumerate(keys) if k == key], dtype=torch.int64).cuda(self.device)
-                    track_sigmoid = torch.index_select(sigmoid, 0, indices)
-                    tracks_sigmoid[j, :] = torch.mean(track_sigmoid, dim=0)
-                    tracks_tags[j, :] = tags[indices[0], :]
-
-                # gather the predictions in rank 0
-                if not self.conf.distributed_val:
-                    tag_list = [torch.zeros_like(tracks_tags) for _ in range(self.conf.local_world_size)]
-                    sigmoid_list = [torch.zeros_like(tracks_sigmoid) for _ in range(self.conf.local_world_size)]
-                    # keys_list = [torch.zeros_like(keys) for _ in range(self.conf.local_world_size)]
-
-                    # ideally we could use `gather` as we just need
-                    # the data in the chief but it is not implemented
-                    # in our backend (NCCL) yet so we are using `all_gather`
-                    # which makes them avaiable in al the ranks.
-                    dist.all_gather(tag_list, tracks_tags)
-                    dist.all_gather(sigmoid_list, tracks_sigmoid)
-
-                    if self.i_am_chief:
-                        for t, s in zip(tag_list, sigmoid_list):
-                            indices = torch.sum(s, dim=1).bool()
-                            y_true.append(t[indices].cpu().detach().numpy())
-                            y_pred.append(s[indices].cpu().detach().numpy())
-                else:
-                    indices = torch.sum(tracks_tags, dim=1).bool()
-                    y_true.append(tracks_tags[indices].cpu().detach().numpy())
-                    y_pred.append(tracks_sigmoid[indices].cpu().detach().numpy())
-
-                self.logger.debug(f'Step [{i + 1}/{self.val_steps}]')
                 if self.i_am_chief:
                     pbar.update()
 
-            if self.i_am_chief:
-                pbar.close()
+            # the amount of tracks among classes can deviate. give some margin.
+            n_tracks = self.conf.tracks_per_rank + 3
+
+            sigmoid = torch.cat(sigmoid_list, dim=0).cuda(self.device)
+            tags = torch.cat(tags_list, dim=0).cuda(self.device)
+            keys = np.hstack(keys_list)
+
+            tracks_sigmoid = torch.zeros(n_tracks, self.conf.n_classes, dtype=torch.float32).cuda(self.device)
+            tracks_tags = torch.zeros(n_tracks, self.conf.n_classes, dtype=torch.float32).cuda(self.device)
+
+            for j, key in enumerate(unique_keys):
+                indices = torch.tensor([l for l, k in enumerate(keys) if k == key], dtype=torch.int64).cuda(self.device)
+                track_sigmoid = torch.index_select(sigmoid, 0, indices)
+
+                tracks_sigmoid[j, :] = torch.mean(track_sigmoid, dim=0)
+                tracks_tags[j, :] = tags[indices[0], :]
+
+            # gather the predictions in rank 0
+            if not self.conf.distributed_val:
+                tag_list = [torch.zeros(n_tracks, self.conf.n_classes).cuda(self.device) for i in range(self.conf.local_world_size)]
+                sigmoid_list = [torch.zeros(n_tracks, self.conf.n_classes).cuda(self.device) for i in range(self.conf.local_world_size)]
+
+                # all reduce tensors must have an uniform shape.
+                # ideally we could use `gather` as we just need
+                # the data in the chief but it is not implemented
+                # in our backend (NCCL) yet so we are using `all_gather`
+                # which makes them avaiable in al the ranks.
+                dist.all_gather(tag_list, tracks_tags)
+                dist.all_gather(sigmoid_list, tracks_sigmoid)
+
+                if self.i_am_chief:
+                    y_true = torch.cat(tag_list, dim=0).cpu().detach().numpy()
+                    y_pred = torch.cat(sigmoid_list, dim=0).cpu().detach().numpy()
+
+                    valid_entries = np.where(y_true.any(axis=1))[0]
+
+                    y_true = y_true[valid_entries]
+                    y_pred = y_pred[valid_entries]
+            else:
+                y_true = tracks_tags.cpu().detach().numpy()
+                y_pred = tracks_sigmoid.cpu().detach().numpy()
+
+        if self.i_am_chief:
+            pbar.close()
 
         self.logger.debug(f"val tags size {len(y_true)}")
         self.logger.debug(f"val preds size {len(y_pred)}")
-
-        if y_true:
-            y_true = np.vstack(y_true)
-            y_pred = np.vstack(y_pred)
 
         loss = np.mean(loss_list)
         return loss, y_true, y_pred
