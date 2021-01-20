@@ -1,1 +1,1 @@
-__all__ = ["vgg"]
+__all__ = ["vgg", "efficientnet"]
