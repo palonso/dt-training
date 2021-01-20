@@ -1,3 +1,6 @@
+# https://github.com/minzwon/sota-music-tagging-models/blob/master/training/model.py
+# Thanks Minz!
+
 import torch
 import torch.nn as nn
 
