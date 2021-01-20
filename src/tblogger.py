@@ -7,7 +7,8 @@ class TBLogger:
 
     def write_epoch_stats(self, n_iter, d):
         for k, v in d.items():
-            self.writer.add_scalars(k, v[-1], n_iter)
+            if v:
+                self.writer.add_scalars(k, v[-1], n_iter)
 
     def close(self):
         self.writer.close()
