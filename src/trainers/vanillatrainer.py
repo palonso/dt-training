@@ -322,13 +322,18 @@ class VanillaTrainer(Trainer):
             self.logger.info(' | '.join(epoch_log))
             self.tensorboard.write_epoch_stats(epoch, stats)
 
+            # compute average validation loss
+            loss_list = [torch.zeros(1).cuda(self.device) for i in range(self.conf.local_world_size)]
+            dist.all_gather(loss_list, torch.tensor([np.float32(loss_val)]).cuda(self.device))
+            loss_val_mean = np.mean([l.item() for l in loss_list])
+
             # save model on the chief model
             if self.i_am_chief:
-                if (loss_val <= best_loss_val) or (epoch == 0):
-                    best_loss_val = loss_val
+                if (loss_val_mean <= best_loss_val) or (epoch == 0):
+                    best_loss_val = loss_val_mean
                     torch.save(self.model.state_dict(), self.checkpoint_path)
                     self.__export_to_onnx()
-                    self.logger.info('lowest validation loss achieved. Updating the model!')
+                    self.logger.info(f'lowest mean validation loss achieved ({loss_val_mean:.4f}). Updating the model!')
 
             self.logger.debug('waiting on barrier to reload the model')
             dist.barrier()
