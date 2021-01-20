@@ -129,7 +129,6 @@ class VanillaTrainer(Trainer):
                 y_true.append(tags.cpu().detach().numpy())
                 y_pred.append(sigmoid.cpu().detach().numpy())
 
-            self.logger.debug(f'Step [{i + 1}/{self.train_steps}]')
             if self.i_am_chief:
                 pbar.update()
 
