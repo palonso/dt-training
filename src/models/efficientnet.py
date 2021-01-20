@@ -213,6 +213,7 @@ class EfficientNet(nn.Module):
         # add embedding layer
         if self._global_params.embeddings_bottleneck:
             self._embeddings = nn.Linear(out_channels, self._global_params.embeddings_size)
+            self._bn2 = nn.BatchNorm1d(num_features=self._global_params.embeddings_size, momentum=bn_mom, eps=bn_eps)
             self._fc = nn.Linear(self._global_params.embeddings_size, self._global_params.num_classes)
         else:
             self._fc = nn.Linear(out_channels, self._global_params.num_classes)
@@ -318,6 +319,7 @@ class EfficientNet(nn.Module):
             if self._global_params.embeddings_bottleneck:
                 x = self._embeddings(x)
                 x = self._relu(x)
+                x = self._bn2(x)
             x = self._fc(x)
         return x
 
