@@ -405,7 +405,6 @@ class EfficientNet(nn.Module):
             in_channels (int): Input data's channel number.
         """
         if in_channels != 3:
-            print('in channels:', in_channels)
             Conv2d = get_same_padding_conv2d(image_size=self._global_params.image_size)
             out_channels = round_filters(32, self._global_params)
             self._conv_stem = Conv2d(in_channels, out_channels, kernel_size=3, stride=2, bias=False)
