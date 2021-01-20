@@ -19,8 +19,10 @@ def launch(args):
         '--master_port', args.master_port,
         'train.py',
         '--timestamp', timestamp,
-        '--config-file', args.config_file,
     ]
+
+    if args.config_file:
+        cmd += ['--config-file', args.config_file]
 
     subprocess.run(cmd, check=True)
 
