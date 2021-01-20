@@ -2,6 +2,7 @@ from pathlib import Path
 import logging
 from pathlib import Path
 import sys
+import json
 
 sys.path.append("..")
 from tblogger import TBLogger
@@ -20,3 +21,7 @@ class Trainer:
         self.i_am_chief = self.rank == 0
 
         self.tensorboard = TBLogger(log_dir=str(Path(self.conf.exp_dir, "tb_logs", f"rank_{self.rank}")))
+
+    def save_config(self):
+        with open(Path(self.conf.exp_dir, f"config_{self.rank}.json"), "w" ) as f:
+            json.dump(vars(self.conf), f, indent=4)

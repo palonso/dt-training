@@ -29,6 +29,7 @@ class VanillaTrainer(Trainer):
 
         conf, _ = self.__parse_args(arg_line)
         self.conf = Namespace(**vars(conf), **vars(manager_conf))
+        super().save_config()
 
         self.logger = logging.getLogger('TrainManager.VanillaTrainer')
         self.logger.info(f"{conf}")

@@ -1,5 +1,4 @@
 import os
-import json
 import logging
 from pathlib import Path
 from datetime import datetime
@@ -61,9 +60,6 @@ class TrainManager:
             for key in ("MASTER_ADDR", "MASTER_PORT", "RANK", "WORLD_SIZE", "LOCAL_RANK")
             }
         self.logger.debug(f"initializing process group with: {env_dict}")
-
-        with open(str(self.exp_dir / f"config_{self.rank}.json"), "w" ) as f:
-            json.dump(vars(self.conf), f, indent=4)
 
     def __delete__(self):
         self.tensorboard.close()
