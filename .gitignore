@@ -11,3 +11,6 @@ exp/*
 
 # notebooks' checkpoints
 src/preprocessing/.ipynb_checkpoints/*
+
+# nohup logs
+nohup*
