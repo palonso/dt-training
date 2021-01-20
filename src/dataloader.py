@@ -44,6 +44,13 @@ def DataLoader(pickle_file, conf, mode='train'):
     rank_subset = torch.utils.data.Subset(dataset, indices)
     labels = np.array([i['tags'] for i in iter(rank_subset)])
 
+    # code to compute weights. For now does not seem to help
+    # counts = labels.sum(axis=0)
+    # print(mode)
+    # print(np.where(counts == 0))
+    # weights = 1 - (((1 - conf.weights_alpha) * np.log(counts)) / np.log(counts.max()))
+    # weights = torch.from_numpy(weights)
+
     if sampler == 'multilabel_balanced_random':
         sampler = MultilabelBalancedRandomSampler(
             labels,
