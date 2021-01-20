@@ -104,7 +104,7 @@ class VanillaTrainer(Trainer):
             self.val_steps = len(self.val_iterator)
             self.logger.info(f'number of validation steps per epoch: {self.val_steps}')
 
-    def __train(self):
+    def __train(self, compute_predictions=False):
         loss_list, y_true, y_pred = [], [], []
 
         # stdout is enought for the progress bar. Don't log this
@@ -116,7 +116,6 @@ class VanillaTrainer(Trainer):
 
             # forward pass
             logits = self.model(specs)
-            sigmoid = self.sigmoid_layer(logits)
             loss = self.criterion(logits, tags)
 
             # backward and optimize
@@ -125,8 +124,10 @@ class VanillaTrainer(Trainer):
             self.optimizer.step()
             loss_list.append(loss.item())
 
-            y_true.append(tags.cpu().detach().numpy())
-            y_pred.append(sigmoid.cpu().detach().numpy())
+            if compute_predictions:
+                sigmoid = self.sigmoid_layer(logits)
+                y_true.append(tags.cpu().detach().numpy())
+                y_pred.append(sigmoid.cpu().detach().numpy())
 
             self.logger.debug(f'Step [{i + 1}/{self.train_steps}]')
             if self.i_am_chief:
@@ -135,10 +136,14 @@ class VanillaTrainer(Trainer):
         if self.i_am_chief:
             pbar.close()
 
-        loss = np.mean(loss_list)
-        return loss, np.vstack(y_true), np.vstack(y_pred)
+        if compute_predictions:
+            y_true = np.vstack(y_true)
+            y_pred = np.vstack(y_pred)
 
-    def __validate(self):
+        loss = np.mean(loss_list)
+        return loss, y_true, y_pred
+
+    def __validate(self, compute_predictions=False):
         loss_list, y_true, y_pred = [], [], []
         sigmoid_list, tags_list, keys_list = [], [], []
         unique_keys = set()
@@ -153,40 +158,64 @@ class VanillaTrainer(Trainer):
 
                 # forward pass
                 logits = self.model(specs)
-                sigmoid = self.sigmoid_layer(logits)
                 loss = self.criterion(logits, tags)
 
                 loss_list.append(loss.item())
 
-                sigmoid_list.append(sigmoid)
-                tags_list.append(tags)
-                keys_list.append(keys)
-                unique_keys.update(set(keys))
+                if compute_predictions:
+                    sigmoid = self.sigmoid_layer(logits)
+                    sigmoid_list.append(sigmoid)
+                    tags_list.append(tags)
+                    keys_list.append(keys)
+                    unique_keys.update(set(keys))
 
                 if self.i_am_chief:
                     pbar.update()
 
+            if self.i_am_chief:
+                pbar.close()
+
+        if compute_predictions:
             # the amount of tracks among classes can deviate. give some margin.
-            n_tracks = self.conf.tracks_per_rank + 3
+            max_n_tracks = self.conf.tracks_per_rank + 3
+            n_tracks =len(unique_keys)
 
             sigmoid = torch.cat(sigmoid_list, dim=0).cuda(self.device)
             tags = torch.cat(tags_list, dim=0).cuda(self.device)
             keys = np.hstack(keys_list)
 
-            tracks_sigmoid = torch.zeros(n_tracks, self.conf.n_classes, dtype=torch.float32).cuda(self.device)
-            tracks_tags = torch.zeros(n_tracks, self.conf.n_classes, dtype=torch.float32).cuda(self.device)
+            tracks_sigmoid = torch.zeros(max_n_tracks, self.conf.n_classes, dtype=torch.float32).cuda(self.device)
+            tracks_tags = torch.zeros(max_n_tracks, self.conf.n_classes, dtype=torch.float32).cuda(self.device)
 
-            for j, key in enumerate(unique_keys):
-                indices = torch.tensor([l for l, k in enumerate(keys) if k == key], dtype=torch.int64).cuda(self.device)
-                track_sigmoid = torch.index_select(sigmoid, 0, indices)
+            indices = np.zeros([n_tracks, len(keys)]).astype(bool)
+            key, idx = keys[0], 0
+            for j, k in enumerate(keys):
+                if k == key:
+                    indices[idx, j] = True
+                else:
+                    key = k
+                    idx += 1
 
-                tracks_sigmoid[j, :] = torch.mean(track_sigmoid, dim=0)
-                tracks_tags[j, :] = tags[indices[0], :]
+            for j in range(n_tracks):
+                track_indices = torch.nonzero(torch.tensor(indices[j])).squeeze().cuda(self.device)
+
+                if track_indices.dim():
+                    track_sigmoid = torch.index_select(sigmoid, 0, track_indices)
+
+                    tracks_sigmoid[j, :] = torch.mean(track_sigmoid, dim=0)
+                    tracks_tags[j, :] = tags[track_indices[0].item(), :]
+                else:
+                    self.logger.debug(f"track ({j}) without indices")
+
+            # free GPU memory
+            del sigmoid
+            del tags
+            torch.cuda.empty_cache()
 
             # gather the predictions in rank 0
             if not self.conf.distributed_val:
-                tag_list = [torch.zeros(n_tracks, self.conf.n_classes).cuda(self.device) for i in range(self.conf.local_world_size)]
-                sigmoid_list = [torch.zeros(n_tracks, self.conf.n_classes).cuda(self.device) for i in range(self.conf.local_world_size)]
+                tag_list = [torch.zeros(max_n_tracks, self.conf.n_classes).cuda(self.device) for i in range(self.conf.local_world_size)]
+                sigmoid_list = [torch.zeros(max_n_tracks, self.conf.n_classes).cuda(self.device) for i in range(self.conf.local_world_size)]
 
                 # all reduce tensors must have an uniform shape.
                 # ideally we could use `gather` as we just need
@@ -208,8 +237,6 @@ class VanillaTrainer(Trainer):
                 y_true = tracks_tags.cpu().detach().numpy()
                 y_pred = tracks_sigmoid.cpu().detach().numpy()
 
-        if self.i_am_chief:
-            pbar.close()
 
         self.logger.debug(f"val tags size {len(y_true)}")
         self.logger.debug(f"val preds size {len(y_pred)}")
@@ -246,16 +273,21 @@ class VanillaTrainer(Trainer):
         for epoch in range(self.epochs):
             self.logger.debug(f'starting epoch {epoch + 1}')
 
+            compute_metrics = not bool(epoch % self.conf.metric_rate)
+
+            self.logger.debug(f'compute metrics: {compute_metrics}')
+
             self.logger.debug('training phase')
-            loss_train, y_true_train, y_pred_train = self.__train()
-            roc_auc_train, pr_auc_train = self.__compute_metrics(y_true_train, y_pred_train)
+            loss_train, y_true_train, y_pred_train = self.__train(compute_predictions=compute_metrics)
+            if compute_metrics:
+                roc_auc_train, pr_auc_train = self.__compute_metrics(y_true_train, y_pred_train)
 
             if self.val_inference:
                 self.logger.debug('validation phase')
-                loss_val, y_true_val, y_pred_val = self.__validate()
+                loss_val, y_true_val, y_pred_val = self.__validate(compute_predictions=compute_metrics)
                 self.scheduler.step(loss_val)
 
-                if self.val_scoring:
+                if self.val_scoring and compute_metrics:
                     roc_auc_val, pr_auc_val = self.__compute_metrics(y_true_val, y_pred_val)
 
             elapsed = str(datetime.now() - start)
@@ -263,9 +295,11 @@ class VanillaTrainer(Trainer):
                 f'Epoch [{epoch + 1:03}/{self.epochs:03}]',
                 f'Time : {elapsed}',
                 f'Train Loss: {loss_train:.3f}',
-                f'Train ROC AUC: {roc_auc_train:.3f}',
-                f'Train AP AUC: {pr_auc_train:.3f}',
             ]
+
+            if compute_metrics:
+                epoch_log.append(f'Train ROC AUC: {roc_auc_train:.3f}')
+                epoch_log.append(f'Train AP AUC: {pr_auc_train:.3f}')
 
             if self.val_inference:
                 stats['Loss'].append({'train': loss_train, 'val': loss_val})
@@ -273,14 +307,15 @@ class VanillaTrainer(Trainer):
             else:
                 stats['Loss'].append({'train': loss_train})
 
-            if self.val_scoring:
-                stats['AUC/ROC'].append({'train': roc_auc_train, 'val': roc_auc_val})
-                stats['AUC/PR'].append({'train': pr_auc_train, 'val': pr_auc_val})
-                epoch_log.append(f'Val ROC AUC: {roc_auc_val:.3f}')
-                epoch_log.append(f'Val PR AUC: {pr_auc_val:.3f}')
-            else:
-                stats['AUC/ROC'].append({'train': roc_auc_train})
-                stats['AUC/PR'].append({'train': pr_auc_train})
+            if compute_metrics:
+                if self.val_scoring:
+                    stats['AUC/ROC'].append({'train': roc_auc_train, 'val': roc_auc_val})
+                    stats['AUC/PR'].append({'train': pr_auc_train, 'val': pr_auc_val})
+                    epoch_log.append(f'Val ROC AUC: {roc_auc_val:.3f}')
+                    epoch_log.append(f'Val PR AUC: {pr_auc_val:.3f}')
+                else:
+                    stats['AUC/ROC'].append({'train': roc_auc_train})
+                    stats['AUC/PR'].append({'train': pr_auc_train})
 
             stats['LR'].append({'lr': self.optimizer.param_groups[0]['lr']})
 
@@ -341,6 +376,7 @@ class VanillaTrainer(Trainer):
         parser.add('--weight-decay-delay', type=int, help='number of epochs before applying weight decay')
         parser.add('--train-batch-size', type=int, help='train batch size')
         parser.add('--val-batch-size', type=int, help='val batch size')
+        parser.add('--metric-rate', type=int, help='number of epochs to wait to update the AUC metrics')
 
         args, unknown_args = parser.parse_known_args(arg_line)
         return args, unknown_args
