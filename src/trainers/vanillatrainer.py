@@ -294,16 +294,16 @@ class VanillaTrainer(Trainer):
             epoch_log = [
                 f'Epoch [{epoch + 1:03}/{self.epochs:03}]',
                 f'Time : {elapsed}',
-                f'Train Loss: {loss_train:.3f}',
+                f'Train Loss: {loss_train:.4f}',
             ]
 
             if compute_metrics:
-                epoch_log.append(f'Train ROC AUC: {roc_auc_train:.3f}')
-                epoch_log.append(f'Train AP AUC: {pr_auc_train:.3f}')
+                epoch_log.append(f'Train ROC AUC: {roc_auc_train:.4f}')
+                epoch_log.append(f'Train AP AUC: {pr_auc_train:.4f}')
 
             if self.val_inference:
                 stats['Loss'].append({'train': loss_train, 'val': loss_val})
-                epoch_log.append(f'Val Loss: {loss_val:.3f}')
+                epoch_log.append(f'Val Loss: {loss_val:.4f}')
             else:
                 stats['Loss'].append({'train': loss_train})
 
@@ -311,8 +311,8 @@ class VanillaTrainer(Trainer):
                 if self.val_scoring:
                     stats['AUC/ROC'].append({'train': roc_auc_train, 'val': roc_auc_val})
                     stats['AUC/PR'].append({'train': pr_auc_train, 'val': pr_auc_val})
-                    epoch_log.append(f'Val ROC AUC: {roc_auc_val:.3f}')
-                    epoch_log.append(f'Val PR AUC: {pr_auc_val:.3f}')
+                    epoch_log.append(f'Val ROC AUC: {roc_auc_val:.4f}')
+                    epoch_log.append(f'Val PR AUC: {pr_auc_val:.4f}')
                 else:
                     stats['AUC/ROC'].append({'train': roc_auc_train})
                     stats['AUC/PR'].append({'train': pr_auc_train})
