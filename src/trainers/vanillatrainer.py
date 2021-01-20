@@ -356,7 +356,7 @@ class VanillaTrainer(Trainer):
         parser.add('--val-sampling-strategy', help='val sampling strategy')
         parser.add('--min-track-duration', help='minimum track duration in seconds', type=float)
         parser.add('--model-name')
-        parser.add('--model-args', action='append')
+        parser.add('--model-args', action='append', default=[])
         parser.add('--model-kwargs', type=yaml.safe_load)
         parser.add('--x-size', type=int, help='mel band frames')
         parser.add('--y-size', type=int, help='mel band bins')
