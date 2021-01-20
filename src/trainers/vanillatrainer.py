@@ -5,6 +5,7 @@ from argparse import Namespace
 from pathlib import Path
 import logging
 import random
+import yaml
 
 import numpy as np
 import torch.onnx
@@ -63,7 +64,7 @@ class VanillaTrainer(Trainer):
             patience=self.conf.lr_patience, verbose=self.i_am_chief)
 
     def __define_model(self):
-        model = ModelFactory().create(self.conf.model_name, n_classes=self.conf.n_classes)
+        model = ModelFactory().create(self.conf.model_name, *self.conf.model_args, **self.conf.model_kwargs)
         torch.cuda.set_device(self.device)
         model.cuda(self.device)
 
@@ -321,6 +322,8 @@ class VanillaTrainer(Trainer):
         parser.add('--val-sampling-strategy', help='val sampling strategy')
         parser.add('--min-track-duration', help='minimum track duration in seconds', type=float)
         parser.add('--model-name')
+        parser.add('--model-args', action='append')
+        parser.add('--model-kwargs', type=yaml.safe_load)
         parser.add('--x-size', type=int, help='mel band frames')
         parser.add('--y-size', type=int, help='mel band bins')
         parser.add('--n-classes', type=int, help='number of classes')
