@@ -19,26 +19,51 @@ class DiscotubeDataset(Dataset):
             transform (callable, optional): Optional transform to be applied
                 on a sample.
         """
-        self.gt = pickle.load(open(pickle_file, 'rb'))
-        self.keys = list(self.gt.keys())
-        self.tracks = self.keys
+        self.logger = logging.getLogger('TrainManager.DiscotubeDataset')
 
         self.root = root
-        self.sampling_strategy=sampling_strategy
+        self.sampling_strategy = sampling_strategy
+        self.transform = transform
 
-        self.logger = logging.getLogger('TrainManager.DiscotubeDataset')
+        self.n_bands = conf.y_size
+        self.patch_size = conf.x_size
+        self.patch_hop_size = self.patch_size  # No overlap
+        self.hop_size = conf.hop_size
+
+        stoframes = conf.sample_rate / self.hop_size
+
+        self.gt = pickle.load(open(pickle_file, 'rb'))
+
+        min_duration = conf.min_track_duration
+        min_duration_frames = min_duration * stoframes
+
+        short_files = set()
+        for key in self.gt.keys():
+            melspectrogram_file = Path(self.root, key)
+
+            floats_num = melspectrogram_file.stat().st_size // 2  # each float16 has 2 bytes
+            frames_num = floats_num // self.n_bands
+            if frames_num < min_duration_frames:
+                short_files.add(key)
+
+        self.logger.debug(f'discarding ({len(short_files)}) tracks of less than {min_duration} seconds')
+
+        for k in short_files:
+            self.gt.pop(k, None)
+
+        self.keys = list(self.gt.keys())
+        self.tracks = self.keys
 
         if conf.seed is not None:
             self.seed = conf.seed
             np.random.seed(seed=self.seed)
             random.seed(a=self.seed, version=2)
 
-        self.transform = transform
+        # intro durations oscilates between 5 to 20 seconds
+        # https://www.bbc.com/news/entertainment-arts-41500692
+        intro_outro_time = 10
 
-        self.n_bands = conf.y_size
-        self.patch_size = conf.x_size
-        self.patch_hop_size = self.patch_size
-        self.hop_size = conf.hop_size
+        self.intro_outro_offset = intro_outro_time * stoframes
 
         if sampling_strategy == 'random_patch':
             self.overlap_add = False
@@ -61,8 +86,10 @@ class DiscotubeDataset(Dataset):
                 floats_num = melspectrogram_file.stat().st_size // 2  # each float16 has 2 bytes
                 frames_num = floats_num // self.n_bands
 
+                offset = max(0, frames_num // 2 - self.max_patches_per_track // 2)
+
                 for hop in range(self.max_patches_per_track):
-                    offset_idx = hop * self.patch_hop_size
+                    offset_idx = offset + hop * self.patch_hop_size
 
                     if offset_idx < (frames_num - self.patch_size):
                         extended_gt[f'{key}-{hop}'] = (key, tags, offset_idx)
@@ -93,8 +120,13 @@ class DiscotubeDataset(Dataset):
 
             frames_num = melspectrogram_file.stat().st_size // (2 * self.n_bands)  # each float16 has 2 bytes
             frames_to_read = min(self.patch_size, frames_num)
-            max_frame = max(frames_num - self.patch_size, 0)
-            offset_idx = random.randint(0, max_frame)
+            max_frame = frames_num - self.patch_size - self.intro_outro_offset
+            min_frame = self.intro_outro_offset
+
+            if max_frame < min_frame:
+                max_frame = frames_num - self.patch_size
+                min_frame = 0
+            offset_idx = random.randint(min_frame, max_frame)
 
 
         # offset: idx * bands * bytes per float

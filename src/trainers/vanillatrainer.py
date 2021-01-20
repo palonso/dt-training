@@ -319,6 +319,7 @@ class VanillaTrainer(Trainer):
             const=True, default=False, help="activate `just-one-batch`")
         parser.add('--train-sampling-strategy', help='train sampling strategy')
         parser.add('--val-sampling-strategy', help='val sampling strategy')
+        parser.add('--min-track-duration', help='minimum track duration in seconds', type=float)
         parser.add('--model-name')
         parser.add('--x-size', type=int, help='mel band frames')
         parser.add('--y-size', type=int, help='mel band bins')
