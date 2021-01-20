@@ -8,3 +8,6 @@ exp/*
 
 # vscode config
 .vscode/*
+
+# notebooks' checkpoints
+src/preprocessing/.ipynb_checkpoints/*
