@@ -5,3 +5,6 @@ exp/*
 */.ipynb_checkpoints/*
 */__pycache__/*
 *.pyc
+
+# vscode config
+.vscode/*
