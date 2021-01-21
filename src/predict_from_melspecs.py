@@ -73,34 +73,37 @@ def predict(args):
         # print(f'{src} -> {tgt}')
         if not dry_run:
             if not tgt.exists() or force:
-                tgt.parent.mkdir(parents=True, exist_ok=True)
+                try:
+                    tgt.parent.mkdir(parents=True, exist_ok=True)
 
-                # read data
-                fp = np.memmap(src, dtype='float16', mode='r')
-                melspectrogram = np.array(fp, dtype='float32').reshape(-1, conf.y_size)
-                del fp
+                    # read data
+                    fp = np.memmap(src, dtype='float16', mode='r')
+                    melspectrogram = np.array(fp, dtype='float32').reshape(-1, conf.y_size)
+                    del fp
 
-                if compress:
-                    melspectrogram = np.log10(10000 * melspectrogram + 1)
+                    if compress:
+                        melspectrogram = np.log10(10000 * melspectrogram + 1)
 
-                # batchize
-                npatches = int(np.ceil((melspectrogram.shape[0] - conf.x_size) / patch_hop_size) + 1)
-                batch = np.zeros([npatches, conf.x_size, conf.y_size])
-                for i in range(npatches):
-                    last_frame = min(i * patch_hop_size + conf.x_size, melspectrogram.shape[0])
-                    actual_size = last_frame - i * patch_hop_size
-                    batch[i, :actual_size] = melspectrogram[i * patch_hop_size: last_frame]
-                    if actual_size < conf.x_size:
-                        print(f'batch {i}/{npatches} with {actual_size} samples')
+                    # batchize
+                    npatches = int(np.ceil((melspectrogram.shape[0] - conf.x_size) / patch_hop_size) + 1)
+                    batch = np.zeros([npatches, conf.x_size, conf.y_size])
+                    for i in range(npatches):
+                        last_frame = min(i * patch_hop_size + conf.x_size, melspectrogram.shape[0])
+                        actual_size = last_frame - i * patch_hop_size
+                        batch[i, :actual_size] = melspectrogram[i * patch_hop_size: last_frame]
+                        # if actual_size < conf.x_size:
+                        #     print(f'batch {i}/{npatches} with {actual_size} samples')
 
-                batch = torch.Tensor(batch)
+                    batch = torch.Tensor(batch)
 
-                _ = model(batch)
-                output = MODEL_OUTPUT['model_output'].cpu().numpy().astype('float16')
+                    _ = model(batch)
+                    output = MODEL_OUTPUT['model_output'].cpu().numpy().astype('float16')
 
-                fp = np.memmap(tgt, dtype='float16', mode='w+', shape=output.shape)
-                fp[:] = output[:]
-                del fp
+                    fp = np.memmap(tgt, dtype='float16', mode='w+', shape=output.shape)
+                    fp[:] = output[:]
+                    del fp
+                except:
+                    print(f'{src} -> {tgt} failed')
 
         pbar.update()
     pbar.close()
