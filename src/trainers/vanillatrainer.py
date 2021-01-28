@@ -187,7 +187,7 @@ class VanillaTrainer(Trainer):
             tracks_sigmoid = torch.zeros(max_n_tracks, self.conf.n_classes, dtype=torch.float32).cuda(self.device)
             tracks_tags = torch.zeros(max_n_tracks, self.conf.n_classes, dtype=torch.float32).cuda(self.device)
 
-            indices = np.zeros([n_tracks, len(keys)]).astype(bool)
+            indices = np.zeros([n_tracks, len(keys)], dtype=bool)
             key, idx = keys[0], 0
             for j, k in enumerate(keys):
                 if k == key:
