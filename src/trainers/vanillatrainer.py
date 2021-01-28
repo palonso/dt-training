@@ -177,8 +177,8 @@ class VanillaTrainer(Trainer):
 
         if compute_predictions:
             # the amount of tracks among classes can deviate. give some margin.
-            max_n_tracks = self.conf.tracks_per_rank + 4
-            n_tracks =len(unique_keys)
+            max_n_tracks = self.conf.tracks_per_rank + 50
+            n_tracks = len(unique_keys)
 
             sigmoid = torch.cat(sigmoid_list, dim=0).cuda(self.device)
             tags = torch.cat(tags_list, dim=0).cuda(self.device)
