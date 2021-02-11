@@ -8,6 +8,7 @@ from essentia import EssentiaError
 from functools import partial
 import os
 import sys
+from tqdm import tqdm
 
 
 def _subprocess(cmd, verbose=True):
@@ -28,10 +29,11 @@ def _subprocess(cmd, verbose=True):
 
     return rc, cmd_str, stderr
 
-
 def _batch_extractor(audio_dir, output_dir, extractor_cmd, output_extension,
                      generate_log=True, audio_types=None, skip_analyzed=False,
-                     jobs=0, verbose=True):
+                     jobs=0, verbose=True, blacklist_file=None,
+                     whitelist_file=None, target=1000000):
+    blacklist, whitelist = None, None
     if not audio_types:
         audio_types = ('.wav', '.aiff', '.flac', '.mp3', '.ogg')
         print("Audio files extensions considered by default: " +
@@ -48,6 +50,16 @@ def _batch_extractor(audio_dir, output_dir, extractor_cmd, output_extension,
     output_dir = os.path.abspath(output_dir)
     audio_dir = os.path.abspath(audio_dir)
 
+    if blacklist_file:
+        with open(blacklist_file, 'r') as f:
+            blacklist = set([l.rstrip() for l in f.readlines()])
+        print(f'there are ({len(blacklist)}) existing files')
+
+    if whitelist_file:
+        with open(whitelist_file, 'r') as f:
+            whitelist = set([l.rstrip() for l in f.readlines()])
+        print(f'computing spectrograms for ({len(whitelist)}) files')
+
     if jobs == 0:
         try:
             jobs = cpu_count()
@@ -60,6 +72,10 @@ def _batch_extractor(audio_dir, output_dir, extractor_cmd, output_extension,
     skipped_count = 0
     skipped_files = []
     cmd_lines = []
+
+    already_computed = set()
+    ids_to_compute = list()
+    pbar = tqdm()
     for abs_file_dir, _, filenames in os.walk(audio_dir):
         for filename in filenames:
             if filename.lower().endswith(audio_types):
@@ -67,13 +83,30 @@ def _batch_extractor(audio_dir, output_dir, extractor_cmd, output_extension,
                 audio_file = os.path.join(abs_file_dir, filename)
                 out_file = os.path.join(output_dir, rel_file_dir, filename)
 
+                if blacklist:
+                    if filename in blacklist:
+                        # we can remove the key from blacklist to speed up
+                        blacklist.discard(filename)
+                        pbar.update()
+                        continue
+
+                if whitelist:
+                    if filename not in whitelist:
+                        print(f'{filename} not in the whitelist')
+                        pbar.update()
+                        continue
+
                 if skip_analyzed:
                     if os.path.isfile( '{}.{}'.format(out_file, output_extension)):
                         print("Found descriptor file for " +
                               audio_file + ", skipping...")
                         skipped_files.append(audio_file)
                         skipped_count += 1
+                        already_computed.add(filename)
+                        target -= 1
+                        pbar.update()
                         continue
+
                 folder = os.path.dirname(out_file)
 
                 if os.path.isfile(folder):
@@ -84,6 +117,21 @@ def _batch_extractor(audio_dir, output_dir, extractor_cmd, output_extension,
                     os.makedirs(folder, exist_ok=True)
 
                 cmd_lines.append(extractor_cmd + [audio_file, out_file])
+                ids_to_compute.append(filename)
+            pbar.update()
+    pbar.close()
+
+    print(f'preanalysis done. There are ({len(cmd_lines)}) spectrograms')
+    target = min(target, len(cmd_lines))
+
+    print(f'targeting ({target}) spectrograms')
+    cmd_lines = cmd_lines[:target]
+    ids_to_compute = set(ids_to_compute[:target])
+
+    ids = list(already_computed.union(ids_to_compute))
+    if not whitelist:
+        with open('ids', 'w') as f:
+            f.write('\n'.join(ids))
 
     # analyze
     log_lines = []
@@ -116,8 +164,9 @@ def _batch_extractor(audio_dir, output_dir, extractor_cmd, output_extension,
         with open(os.path.join(output_dir, 'log'), 'w') as f:
             f.write('\n'.join(log))
 
-def main(audio_dir, output_dir, generate_log=True, verbose=True, 
-         audio_types='mp4', skip_analyzed=True, jobs=0):
+def main(audio_dir, output_dir, generate_log=True, verbose=True,
+         audio_types='mp4', skip_analyzed=True, jobs=0, blacklist_file=None,
+         whitelist_file=None, target=1000000):
     """Generates mel bands for every audio file matching `audio_types` in `audio_dir`.
     The generated .npy files are stored in `output_dir` matching the folder
     structure found in `audio_dir`.
@@ -132,17 +181,21 @@ def main(audio_dir, output_dir, generate_log=True, verbose=True,
 
     _batch_extractor(audio_dir, output_dir, extractor_cmd, 'mmap',
                      generate_log=generate_log, audio_types=audio_types,
-                     skip_analyzed=skip_analyzed, jobs=jobs, verbose=verbose)
-    
-    
+                     skip_analyzed=skip_analyzed, jobs=jobs, verbose=verbose,
+                     blacklist_file=blacklist_file, whitelist_file=whitelist_file,
+                     target=target)
+
+
 
 if __name__ == '__main__':
     parser = ArgumentParser(
         description='Computes the mel spectrogram of a given audio file.')
-
     parser.add_argument('audio_dir')
     parser.add_argument('output_dir')
     parser.add_argument('--audio_types', default='mp4')
+    parser.add_argument('--blacklist-file', default=None, 'files to skip')
+    parser.add_argument('--whitelist-file', default=None, 'files to process exclusively')
     parser.add_argument('--jobs', type=int, default=4)
+    parser.add_argument('--target', type=int, default=1000000, 'maximum number of spectrograms to compute')
 
     main(**vars(parser.parse_args()))
