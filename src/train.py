@@ -23,7 +23,7 @@ def train(args, unknown_args):
         os.environ['WORLD_SIZE'] = '1'
 
     # additional options
-    os.environ['NCCL_SOCKET_IFRAME'] = args.nccl_socket_iframe
+    os.environ['NCCL_SOCKET_IFNAME'] = args.nccl_socket_iframe
     os.environ['NCCL_IB_DISABLE'] = args.nccl_ib_disable
 
     train_manager = TrainManager(unknown_args)
