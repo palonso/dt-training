@@ -82,6 +82,14 @@ class VanillaTrainer(Trainer):
             device_ids=[self.device],
             output_device=self.device)
 
+        nproc_per_node = self.conf.nproc_per_node
+        self.node_groups = dict()
+        for i in range(self.conf.n_nodes):
+            group_ranks = list(range(i * nproc_per_node, i * nproc_per_node + nproc_per_node))
+            self.node_groups[i] = torch.distributed.new_group(ranks=group_ranks)
+            self.logger.debug(f'creating group for ranks: {group_ranks}')
+        self.node_group = self.node_groups[self.conf.node_rank]
+
     def __model_initialization(self):
         for m in self.model.parameters():
             if isinstance(m, nn.Conv2d):
@@ -222,8 +230,8 @@ class VanillaTrainer(Trainer):
                 # the data in the chief but it is not implemented
                 # in our backend (NCCL) yet so we are using `all_gather`
                 # which makes them avaiable in al the ranks.
-                dist.all_gather(tag_list, tracks_tags)
-                dist.all_gather(sigmoid_list, tracks_sigmoid)
+                dist.all_gather(tag_list, tracks_tags, group=self.node_group)
+                dist.all_gather(sigmoid_list, tracks_sigmoid, group=self.node_group)
 
                 if self.i_am_chief:
                     y_true = torch.cat(tag_list, dim=0).cpu().detach().numpy()
@@ -324,7 +332,7 @@ class VanillaTrainer(Trainer):
 
             # compute average validation loss
             loss_list = [torch.zeros(1).cuda(self.device) for i in range(self.conf.local_world_size)]
-            dist.all_gather(loss_list, torch.tensor([np.float32(loss_val)]).cuda(self.device))
+            dist.all_gather(loss_list, torch.tensor([np.float32(loss_val)]).cuda(self.device), group=self.node_group)
             loss_val_mean = np.mean([l.item() for l in loss_list])
 
             # save model on the chief model

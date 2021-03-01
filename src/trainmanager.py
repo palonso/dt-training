@@ -79,6 +79,7 @@ class TrainManager:
         parser.add('--logging-level', help='console logging level',
             default='INFO')
         parser.add('--node-rank', default=0, type=int)
+        parser.add('--n-nodes', default=0, type=int)
         parser.add('--local_rank', default=0, type=int)
         parser.add('--gpu-shift', default=0, type=int)
         parser.add('--nproc-per-node', help='number of processes per node',
