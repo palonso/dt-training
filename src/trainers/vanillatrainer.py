@@ -208,10 +208,13 @@ class VanillaTrainer(Trainer):
                 track_indices = torch.nonzero(torch.tensor(indices[j])).squeeze().cuda(self.device)
 
                 if track_indices.dim():
-                    track_sigmoid = torch.index_select(sigmoid, 0, track_indices)
+                    if len(track_indices):
+                        track_sigmoid = torch.index_select(sigmoid, 0, track_indices)
 
-                    tracks_sigmoid[j, :] = torch.mean(track_sigmoid, dim=0)
-                    tracks_tags[j, :] = tags[track_indices[0].item(), :]
+                        tracks_sigmoid[j, :] = torch.mean(track_sigmoid, dim=0)
+                        tracks_tags[j, :] = tags[track_indices[0].item(), :]
+                    else:
+                        self.logger.debug(f"track ({j}) without indices")
                 else:
                     self.logger.debug(f"track ({j}) without indices")
 
