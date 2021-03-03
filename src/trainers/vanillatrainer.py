@@ -120,27 +120,29 @@ class VanillaTrainer(Trainer):
         # stdout is enought for the progress bar. Don't log this
         if self.i_am_chief:
             pbar = tqdm(self.train_iterator, desc='train iter')
-        for i, sample in enumerate(self.train_iterator):
-            specs = sample['melspectrogram'].cuda(non_blocking=True)
-            tags = sample['tags'].cuda(non_blocking=True)
 
-            # forward pass
-            logits = self.model(specs)
-            loss = self.criterion(logits, tags)
+        with self.model.join():
+            for i, sample in enumerate(self.train_iterator):
+                specs = sample['melspectrogram'].cuda(non_blocking=True)
+                tags = sample['tags'].cuda(non_blocking=True)
 
-            # backward and optimize
-            self.optimizer.zero_grad()
-            loss.backward()
-            self.optimizer.step()
-            loss_list.append(loss.item())
+                # forward pass
+                logits = self.model(specs)
+                loss = self.criterion(logits, tags)
 
-            if compute_predictions:
-                sigmoid = self.sigmoid_layer(logits)
-                y_true.append(tags.cpu().detach().numpy())
-                y_pred.append(sigmoid.cpu().detach().numpy())
+                # backward and optimize
+                self.optimizer.zero_grad()
+                loss.backward()
+                self.optimizer.step()
+                loss_list.append(loss.item())
 
-            if self.i_am_chief:
-                pbar.update()
+                if compute_predictions:
+                    sigmoid = self.sigmoid_layer(logits)
+                    y_true.append(tags.cpu().detach().numpy())
+                    y_pred.append(sigmoid.cpu().detach().numpy())
+
+                if self.i_am_chief:
+                    pbar.update()
 
         if self.i_am_chief:
             pbar.close()
