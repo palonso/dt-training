@@ -114,6 +114,7 @@ class VanillaTrainer(Trainer):
             self.logger.info(f'number of validation steps per epoch: {self.val_steps}')
 
     def __train(self, compute_predictions=False):
+        self.model.train()
         loss_list, y_true, y_pred = [], [], []
 
         # stdout is enought for the progress bar. Don't log this
@@ -152,6 +153,7 @@ class VanillaTrainer(Trainer):
         return loss, y_true, y_pred
 
     def __validate(self, compute_predictions=False):
+        self.model.eval()
         loss_list, y_true, y_pred = [], [], []
         sigmoid_list, tags_list, keys_list = [], [], []
         unique_keys = set()
